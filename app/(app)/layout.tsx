@@ -20,6 +20,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const nav = [
     { href: '/', label: 'Overview', show: true },
     { href: '/players', label: 'Players', show: true },
+    { href: '/players/compare', label: 'Compare', show: true },
     { href: '/teams', label: 'Clubs', show: true },
     { href: '/matches', label: 'Matches', show: true },
     { href: '/shortlists', label: 'Shortlists', show: can(user.role, 'shortlists:write') },
@@ -27,6 +28,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     { href: '/data', label: 'Data', show: true },
     { href: '/data/sql', label: 'SQL', show: can(user.role, 'sql:read') },
     { href: '/data/jobs', label: 'Jobs', show: can(user.role, 'data:read') },
+    { href: '/admin/users', label: 'Users', show: can(user.role, 'users:manage') },
   ].filter((entry) => entry.show);
 
   return (
@@ -51,10 +53,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
           <div className="ml-auto flex items-center gap-3">
             <GlobalSearch />
-            <div className="hidden text-right sm:block">
-              <div className="text-xs font-medium text-ink-800">{user.displayName}</div>
+            <Link href="/account" className="hidden text-right sm:block">
+              <div className="text-xs font-medium text-ink-800 hover:text-brand-600">
+                {user.displayName}
+              </div>
               <div className="text-[11px] uppercase tracking-wide text-ink-400">{user.role}</div>
-            </div>
+            </Link>
             <SignOutButton />
           </div>
         </div>

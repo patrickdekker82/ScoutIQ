@@ -308,6 +308,7 @@ model User {
   queryRuns      QueryHistory[]
   auditLogs      AuditLog[]
   imports        DataImport[]
+  syncSchedules  ProviderSyncSchedule[]
 
   @@index([role])
   @@map("users")
@@ -344,6 +345,7 @@ model Provider {
   mappings ExternalEntityMapping[]
   events   Event[]
   tracking TrackingSession[]
+  syncs    ProviderSyncSchedule[]
 
   @@map("providers")
 }
@@ -1981,4 +1983,41 @@ model AuditLog {
   @@index([actorId])
   @@index([entityType, entityId])
   @@map("audit_logs")
+}
+
+/// Recurring synchronisation with an external provider API (§88 phase 8).
+///
+/// Kept in the database rather than in the environment so a schedule survives a
+/// container rebuild and a migration to another machine, and so the audit trail
+/// can say who created it. Secrets stay in the environment: this row names a
+/// provider, never a key.
+model ProviderSyncSchedule {
+  id                    String        @id @default(uuid())
+  providerId            String
+  name                  String
+  cron                  String
+  enabled               Boolean       @default(true)
+  competitionExternalId String?
+  seasonExternalId      String?
+  includeEvents         Boolean       @default(true)
+  includeTracking       Boolean       @default(false)
+  matchLimit            Int?
+  /// Re-fetch this far before the watermark so a late correction is not missed.
+  overlapHours          Int           @default(24)
+  /// Newest kickoff already synchronised; the next run asks for data after it.
+  watermark             DateTime?
+  lastRunAt             DateTime?
+  lastStatus            ImportStatus?
+  lastError             String?
+  consecutiveFailures   Int           @default(0)
+  createdById           String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  provider  Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  createdBy User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([providerId, name])
+  @@index([enabled])
+  @@map("provider_sync_schedules")
 }

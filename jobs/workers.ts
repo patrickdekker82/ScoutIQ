@@ -8,6 +8,7 @@ import { AnalyticsService } from '@/server/services/analytics.service';
 import { ExportService } from '@/server/services/export.service';
 import { ImportService } from '@/server/services/import.service';
 import { ReportService } from '@/server/services/report.service';
+import { syncService } from '@/server/services/sync.service';
 import { audit } from '@/server/audit';
 import {
   QUEUE_ANALYTICS,
@@ -45,6 +46,16 @@ export function startWorkers(): Worker[] {
   const importWorker = new Worker<ImportJobData>(
     QUEUE_IMPORT,
     async (job) => {
+      // External API synchronisation (§88 phase 8). A schedule owns its own
+      // watermark and failure state, so those jobs go through the sync service
+      // rather than straight to the importer.
+      if (job.data.syncScheduleId) {
+        return { syncs: [await syncService.runSchedule(job.data.syncScheduleId)] };
+      }
+      if (job.name === 'external-sync') {
+        return { syncs: await syncService.runDue() };
+      }
+
       const providers =
         !job.data.providerKey || job.data.providerKey === 'all'
           ? availableProviders()

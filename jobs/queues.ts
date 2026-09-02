@@ -20,6 +20,8 @@ export const QUEUE_MAINTENANCE = 'maintenance';
 
 export interface ImportJobData {
   providerKey: string;
+  /** Set when the job came from a sync schedule, so the worker can record its outcome. */
+  syncScheduleId?: string;
   competitionExternalId?: string;
   seasonExternalId?: string;
   matchLimit?: number;

@@ -192,7 +192,14 @@ export class ApiFootballProvider extends BaseProvider {
       `fixtures?league=${params.competitionExternalId}&season=${params.seasonExternalId}`,
     );
 
-    return fixtures.slice(0, params.limit ?? fixtures.length).map((entry) => ({
+    // Incremental synchronisation (§88 phase 8): the API has no "changed since"
+    // filter, so the window is applied to kickoff time after the fetch. That
+    // saves writes, not requests - the request cost is unchanged.
+    const windowed = params.since
+      ? fixtures.filter((entry) => new Date(entry.fixture.date) >= params.since!)
+      : fixtures;
+
+    return windowed.slice(0, params.limit ?? windowed.length).map((entry) => ({
       externalId: String(entry.fixture.id),
       competitionExternalId: String(entry.league.id),
       seasonExternalId: String(entry.league.season),

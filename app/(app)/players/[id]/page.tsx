@@ -135,7 +135,15 @@ export default async function PlayerPage({ params }: { params: Promise<{ id: str
           )}
         </div>
 
-        <GenerateReportButton playerId={player.id} />
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/players/compare?ids=${player.id}`}
+            className="rounded-md border border-ink-300 px-3 py-2 text-sm font-medium text-ink-700 hover:bg-ink-100"
+          >
+            Compare
+          </Link>
+          <GenerateReportButton playerId={player.id} />
+        </div>
       </header>
 
       {!seasonMetric ? (

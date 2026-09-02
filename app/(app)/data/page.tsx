@@ -4,6 +4,7 @@ import { getSessionUser, can } from '@/server/auth';
 import { Card, Empty, Table, Td, Th } from '@/components/ui';
 import { ImportPanel } from '@/components/import-panel';
 import { ExportPanel } from '@/components/export-panel';
+import { SyncSchedules, type SyncScheduleRow } from '@/components/sync-schedules';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +13,7 @@ export default async function DataPage() {
   const user = await getSessionUser();
   const providers = describeProviders();
 
-  const [rows, imports, errors] = await Promise.all([
+  const [rows, imports, errors, syncs] = await Promise.all([
     prisma.provider.findMany({
       include: { _count: { select: { imports: true } }, imports: { orderBy: { startedAt: 'desc' }, take: 1 } },
     }),
@@ -30,13 +31,53 @@ export default async function DataPage() {
       orderBy: { createdAt: 'desc' },
       take: 10,
     }),
+    prisma.providerSyncSchedule.findMany({
+      include: { provider: { select: { key: true, name: true } } },
+      orderBy: [{ enabled: 'desc' }, { name: 'asc' }],
+    }),
   ]);
 
   const byKey = new Map(rows.map((row) => [row.key, row]));
+  const configuredByKey = new Map(providers.map((provider) => [provider.key, provider.configured]));
+
+  // Only the commercial APIs are worth a recurring sync; the open-data and file
+  // providers are imported on demand from the panel above.
+  const syncableProviders = providers
+    .filter((provider) => provider.kind === 'COMMERCIAL_API')
+    .map((provider) => ({
+      key: provider.key,
+      name: provider.name,
+      configured: provider.configured,
+    }));
+
+  const syncRows: SyncScheduleRow[] = syncs.map((schedule) => ({
+    id: schedule.id,
+    name: schedule.name,
+    cron: schedule.cron,
+    enabled: schedule.enabled,
+    competitionExternalId: schedule.competitionExternalId,
+    seasonExternalId: schedule.seasonExternalId,
+    includeEvents: schedule.includeEvents,
+    includeTracking: schedule.includeTracking,
+    matchLimit: schedule.matchLimit,
+    overlapHours: schedule.overlapHours,
+    watermark: schedule.watermark?.toISOString() ?? null,
+    lastRunAt: schedule.lastRunAt?.toISOString() ?? null,
+    lastStatus: schedule.lastStatus,
+    lastError: schedule.lastError,
+    consecutiveFailures: schedule.consecutiveFailures,
+    providerKey: schedule.provider.key,
+    providerName: schedule.provider.name,
+    providerConfigured: configuredByKey.get(schedule.provider.key) ?? false,
+  }));
 
   return (
     <div className="space-y-5">
       {user && can(user.role, 'imports:run') && <ImportPanel providers={providers} />}
+
+      {user && can(user.role, 'providers:manage') && (
+        <SyncSchedules schedules={syncRows} providers={syncableProviders} />
+      )}
 
       <Card
         title="Provider registry"

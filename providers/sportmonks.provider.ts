@@ -195,7 +195,13 @@ export class SportmonksProvider extends BaseProvider {
       `fixtures?filters=fixtureSeasons:${params.seasonExternalId}&include=participants;scores`,
     );
 
-    return fixtures.slice(0, params.limit ?? fixtures.length).map((fixture) => {
+    // See the note in the API-Football provider: the window is applied to
+    // kickoff time after the fetch (§88 phase 8).
+    const windowed = params.since
+      ? fixtures.filter((fixture) => new Date(fixture.starting_at) >= params.since!)
+      : fixtures;
+
+    return windowed.slice(0, params.limit ?? windowed.length).map((fixture) => {
       const home = fixture.participants?.find((team) => team.meta?.location === 'home');
       const away = fixture.participants?.find((team) => team.meta?.location === 'away');
 

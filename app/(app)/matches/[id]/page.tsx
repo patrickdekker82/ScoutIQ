@@ -5,6 +5,7 @@ import { prisma } from '@/db/client';
 import { Card, DemoBadge, Empty, Stat, Table, Td, Th } from '@/components/ui';
 import { ShotMap } from '@/components/pitch';
 import { EventBrowser } from '@/components/event-browser';
+import { PassingNetworkPanel } from '@/components/passing-network-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -121,6 +122,14 @@ export default async function MatchPage({ params }: { params: Promise<{ id: stri
           <code className="rounded bg-ink-100 px-1">npm run analytics:refresh</code>.
         </Empty>
       )}
+
+      <PassingNetworkPanel
+        matchId={match.id}
+        teams={[
+          { id: match.homeTeamId, name: match.homeTeam.name },
+          { id: match.awayTeamId, name: match.awayTeam.name },
+        ]}
+      />
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card title="Shot map" subtitle={`${shots.length} shots`}>
