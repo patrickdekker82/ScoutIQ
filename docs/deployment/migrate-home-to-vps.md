@@ -82,7 +82,7 @@ Stop the API so nothing writes while you copy:
 
 ```bash
 # [HOME]
-docker compose -f docker-compose.yml -f docker-compose.prod.yml stop api
+docker compose -f docker-compose.yml -f docker-compose.prod.yml stop web
 ```
 
 Take a final incremental backup now that writes have stopped:
@@ -163,7 +163,7 @@ docker compose ps      # wait until postgres is healthy
 ```bash
 # [VPS]
 npm run db:verify -- /srv/scoutiq/data/backups/scoutiq-scoutiq-<timestamp>-final.dump
-docker compose run --rm api bash scripts/db-restore.sh --yes --clean \
+docker compose run --rm web bash scripts/db-restore.sh --yes --clean \
   /data/backups/scoutiq-scoutiq-<timestamp>-final.dump
 ```
 
@@ -177,14 +177,14 @@ The dump carries the schema as it was; apply anything newer:
 ```bash
 # [VPS]
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up migrate
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d api worker
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d web worker scheduler
 ```
 
 ## 11. Verify analytics
 
 ```bash
 # [VPS]
-curl -s http://127.0.0.1:3000/health/ready | jq
+curl -s http://127.0.0.1:3000/api/health | jq
 TOKEN=$(curl -s -X POST http://127.0.0.1:3000/api/v1/auth/login \
   -H 'content-type: application/json' \
   -d '{"email":"you@example.com","password":"..."}' | jq -r .token)
@@ -270,7 +270,7 @@ Confirm the certificate and the route:
 
 ```bash
 dig +short scoutiq.example.com
-curl -sI https://scoutiq.example.com/health/live
+curl -sI https://scoutiq.example.com/api/health?probe=live
 ```
 
 ## 16. Verify the application
@@ -278,7 +278,7 @@ curl -sI https://scoutiq.example.com/health/live
 Full pass against the public URL:
 
 ```bash
-curl -s https://scoutiq.example.com/health/ready | jq
+curl -s https://scoutiq.example.com/api/health | jq
 ```
 
 - [ ] Login works
@@ -286,7 +286,7 @@ curl -s https://scoutiq.example.com/health/ready | jq
 - [ ] A report renders and downloads
 - [ ] A manual import succeeds
 - [ ] Analytics recompute succeeds
-- [ ] `/health/ready` returns 200 with database, redis and storage `ok`
+- [ ] `/api/health` returns 200 with database, redis and storage `ok`
 
 Only now re-enable scheduled work:
 
@@ -296,7 +296,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d worker
 docker compose logs --tail=20 worker   # expect "schedules registered"
 ```
 
-Configure backups on the new environment ([backup.md](backup.md)) - a VPS
+Configure backups on the new environment ([backups.md](backups.md)) - a VPS
 without a verified backup is a single point of failure:
 
 ```bash

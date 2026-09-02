@@ -124,7 +124,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now scoutiq
 ## 8. Verify
 
 ```bash
-curl -s http://127.0.0.1:3000/health/ready | jq
+curl -s http://127.0.0.1:3000/api/health | jq
 docker compose ps
 ```
 

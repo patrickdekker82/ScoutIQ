@@ -9,9 +9,13 @@ jobs:
   check:
     name: Typecheck, test, build
     runs-on: ubuntu-latest
+    env:
+      # A complete environment so `next build` and the tests can resolve config.
+      DATABASE_URL: postgresql://scoutiq:scoutiq@localhost:5432/scoutiq
+      REDIS_URL: redis://localhost:6379
+      AUTH_SECRET: ci-secret-value-that-is-long-enough
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -28,8 +32,8 @@ jobs:
       - name: Build
         run: npm run build
 
-  migrations:
-    name: Migrations reproduce the schema
+  database:
+    name: Migrations, views and backup round-trip
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -42,8 +46,19 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U scoutiq"
           --health-interval 10s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgresql://scoutiq:scoutiq@localhost:5432/scoutiq?schema=public
+      REDIS_URL: redis://localhost:6379
+      AUTH_SECRET: ci-secret-value-that-is-long-enough
+      DATA_ROOT: ${{ runner.temp }}/scoutiq-data
+      SCHEDULER_ENABLED: "false"
+      PDF_ENABLED: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -52,34 +67,67 @@ jobs:
           cache: npm
       - run: npm ci
 
-      # A fresh PostgreSQL instance must be able to recreate the complete
-      # ScoutIQ schema from migrations alone.
+      # A fresh PostgreSQL instance must recreate the complete ScoutIQ schema
+      # from migrations alone (§10, §20).
       - name: Apply migrations to an empty database
-        run: npx prisma migrate deploy
+        run: npm run db:migrate
 
       - name: Migrations must match the schema exactly
-        run: npx prisma migrate diff --from-schema-datasource prisma/schema.prisma --to-schema-datamodel prisma/schema.prisma --exit-code
+        run: >-
+          npx prisma migrate diff
+          --from-schema-datasource prisma/schema.prisma
+          --to-schema-datamodel prisma/schema.prisma
+          --exit-code
 
-      - name: Backup, verify and restore round-trip
-        env:
-          BACKUP_ROOT: ${{ runner.temp }}/backups
+      - name: Views and materialized views exist
         run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
+          psql "$DATABASE_URL" -tAc "SELECT count(*) FROM information_schema.views WHERE table_schema='public'" | grep -qE '^1[0-9]$'
+          psql "$DATABASE_URL" -tAc "SELECT count(*) FROM pg_matviews WHERE schemaname='public'" | grep -q '^5$'
+
+      # The demo path is the §73 guarantee: usable with no keys and no network.
+      - name: Seed, import demo data and compute analytics
+        env:
+          SEED_ADMIN_EMAIL: ci@scoutiq.local
+          SEED_ADMIN_PASSWORD: ci-password-123
+        run: |
+          npm run db:seed
+          npm run ingest:demo
+          npm run analytics:refresh
+
+      - name: Analytics produced results
+        run: |
+          psql "$DATABASE_URL" -tAc "SELECT count(*) FROM player_season_metrics" | grep -qv '^0$'
+          psql "$DATABASE_URL" -tAc "SELECT count(*) FROM player_role_scores"   | grep -qv '^0$'
+          psql "$DATABASE_URL" -tAc "SELECT count(*) FROM player_similarity"    | grep -qv '^0$'
+
+      - name: Backup, verify and export round-trip
+        env:
+          BACKUP_ROOT: ${{ runner.temp }}/scoutiq-data/backups
+        run: |
           npm run db:backup
           npm run db:verify -- --deep
+          npm run db:export -- --dataset players --format csv
 
   docker:
-    name: Docker image builds
+    name: Images build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build application image
+
+      - name: Application image
         uses: docker/build-push-action@v6
         with:
           context: .
           target: runtime
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Optional analytics worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./analytics-worker
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max

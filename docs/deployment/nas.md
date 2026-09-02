@@ -92,7 +92,7 @@ The container path is arbitrary - `ARCHIVE_ROOT` just has to match it.
 Verify:
 
 ```bash
-curl -s http://127.0.0.1:3000/health/ready | jq '.checks.archive'
+curl -s http://127.0.0.1:3000/api/health | jq '.checks.archive'
 # "ok" | "unavailable (optional)" | "not configured (optional)"
 ```
 
@@ -105,7 +105,7 @@ An unavailable archive **never** makes readiness fail.
 | Import | Succeeds; raw payload stays under `RAW_DATA_ROOT`, archive skipped |
 | Report render | Succeeds; report stays under `REPORT_ROOT`, archive skipped |
 | `npm run db:backup` | Succeeds; logs a warning, keeps the local dump |
-| `/health/ready` | Returns 200 with `archive: "unavailable (optional)"` |
+| `/api/health` | Returns 200 with `archive: "unavailable (optional)"` |
 
 ## Replacing the NAS later
 

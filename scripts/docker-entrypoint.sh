@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 #
-# Container entrypoint. Selects the role from the command:
+# Container entrypoint. The command selects the role (§6):
 #
-#   api      - HTTP API (default)
-#   worker   - queue workers (imports + analytics)
-#   migrate  - apply Prisma migrations and exit
-#   seed     - seed the database and exit
-#   backup   - create a database backup and exit
-#   <other>  - executed verbatim
+#   web        - Next.js server (UI + API)
+#   worker     - queue workers: imports, analytics, exports, reports
+#   scheduler  - registers the repeatable jobs
+#   migrate    - apply Prisma migrations and exit
+#   seed       - seed the admin user and the system roles, then exit
+#   demo       - import the demo league, then exit
+#   backup     - create a database backup and exit
+#   <other>    - executed verbatim
 #
-# `migrate` is a separate role rather than something the API does at boot, so
-# multiple API replicas can never race each other over the schema.
+# `migrate` is its own role rather than something the web process does at boot,
+# so multiple replicas can never race each other over the schema.
 
 set -euo pipefail
 
@@ -32,14 +34,18 @@ wait_for_db() {
   return 1
 }
 
-case "${1:-api}" in
-  api)
+case "${1:-web}" in
+  web)
     wait_for_db
-    exec node dist/main.js
+    exec node server.js
     ;;
   worker)
     wait_for_db
-    exec node dist/worker.js
+    exec npx tsx jobs/worker-main.ts
+    ;;
+  scheduler)
+    wait_for_db
+    exec npx tsx jobs/scheduler-main.ts
     ;;
   migrate)
     wait_for_db
@@ -47,7 +53,15 @@ case "${1:-api}" in
     ;;
   seed)
     wait_for_db
-    exec node dist/cli/seed.js
+    exec npx tsx scripts/seed.ts
+    ;;
+  demo)
+    wait_for_db
+    exec npx tsx scripts/ingest.ts demo
+    ;;
+  analytics)
+    wait_for_db
+    exec npx tsx scripts/analytics-refresh.ts "${@:2}"
     ;;
   backup)
     exec bash scripts/db-backup.sh "${@:2}"

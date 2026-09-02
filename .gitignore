@@ -4,18 +4,20 @@ node_modules/
 .pnp.js
 
 # Build output
-dist/
+.next/
+out/
 build/
+dist/
 *.tsbuildinfo
+next-env.d.ts
 
-# Environment / secrets  -- NEVER commit these (see docs/deployment/docker.md)
+# Environment / secrets - NEVER commit these
 .env
 .env.*
 !.env.example
 *.pem
 *.key
 *.crt
-!**/testdata/**/*.crt
 secrets/
 
 # Application data (must live outside source control; see DATA_ROOT).
@@ -31,7 +33,7 @@ npm-debug.log*
 coverage/
 .vitest/
 
-# Python (ingest service)
+# Python (optional analytics worker)
 __pycache__/
 *.py[cod]
 .venv/

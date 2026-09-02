@@ -1,8 +1,15 @@
-// ScoutIQ database schema.
+// ============================================================================
+// ScoutIQ canonical database schema
 //
-// The schema is reproducible on any PostgreSQL instance through the migrations
-// in prisma/migrations. A fresh database becomes a complete ScoutIQ database
-// with `npm run db:migrate` - no manual SQL, no environment-specific steps.
+// PostgreSQL is a first-class product here, not an implementation detail: the
+// model is normalised, indexed and queryable with any standard client. JSONB
+// is used only where the shape is genuinely open (provider settings, weights,
+// frozen report snapshots) - never as a substitute for modelling football.
+//
+// Every imported row carries provenance (provider, provider version, external
+// id, source dataset, import) so the question "where did this number come
+// from?" always has an answer.
+// ============================================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -10,241 +17,1968 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  // Resolved from the environment at runtime; never hard-coded.
   url      = env("DATABASE_URL")
 }
 
+// DIRECT_DATABASE_URL is deliberately not wired into the datasource: making it
+// a schema-level requirement breaks `prisma generate` whenever it is unset.
+// It is honoured where a direct, non-pooled connection actually matters - the
+// SQL console, exports, and the backup/restore scripts - and falls back to
+// DATABASE_URL. See lib/config.ts.
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
 enum UserRole {
   ADMIN
+  ANALYST
   SCOUT
   VIEWER
 }
 
+enum ProviderKind {
+  OPEN_DATA
+  COMMERCIAL_API
+  FILE_IMPORT
+  DEMO
+}
+
+enum EntityType {
+  COMPETITION
+  COMPETITION_SEASON
+  TEAM
+  PLAYER
+  MATCH
+  EVENT
+  VENUE
+  TRACKING_SESSION
+}
+
 enum ImportStatus {
-  PENDING
+  QUEUED
   RUNNING
-  SUCCEEDED
+  COMPLETED
   FAILED
+  CANCELLED
+}
+
+enum ImportTrigger {
+  MANUAL
+  SCHEDULED
+  API
+  SEED
+}
+
+enum IssueSeverity {
+  ERROR
+  WARNING
+  INFO
+}
+
+enum MappingMethod {
+  EXACT
+  FUZZY
+  MANUAL
+  PROVIDER_ID
+}
+
+enum Confidence {
+  HIGH
+  MEDIUM
+  LOW
+  INSUFFICIENT
+}
+
+enum CompetitionType {
+  LEAGUE
+  CUP
+  INTERNATIONAL
+  FRIENDLY
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  MIXED
+}
+
+enum PreferredFoot {
+  LEFT
+  RIGHT
+  BOTH
+  UNKNOWN
+}
+
+enum MembershipType {
+  PERMANENT
+  LOAN
+  YOUTH
+  TRIAL
+}
+
+enum MatchStatus {
+  SCHEDULED
+  LIVE
+  COMPLETED
+  POSTPONED
+  CANCELLED
+}
+
+enum EventType {
+  PASS
+  SHOT
+  CARRY
+  DRIBBLE
+  DUEL
+  TACKLE
+  INTERCEPTION
+  PRESSURE
+  RECOVERY
+  CLEARANCE
+  BLOCK
+  FOUL
+  CARD
+  GOAL
+  SET_PIECE
+  TOUCH
+  SUBSTITUTION
+  OFFSIDE
+  GOALKEEPER
+  MISCONTROL
+  DISPOSSESSED
+  HALF_START
+  HALF_END
+  OTHER
+}
+
+enum PassHeight {
+  GROUND
+  LOW
+  HIGH
+  UNKNOWN
+}
+
+enum BodyPart {
+  RIGHT_FOOT
+  LEFT_FOOT
+  HEAD
+  OTHER
+  UNKNOWN
+}
+
+enum DuelType {
+  AERIAL
+  GROUND
+  LOOSE_BALL
+  FIFTY_FIFTY
+  TACKLE
+}
+
+enum CardType {
+  YELLOW
+  SECOND_YELLOW
+  RED
+}
+
+enum SetPieceType {
+  CORNER
+  FREE_KICK
+  THROW_IN
+  PENALTY
+  KICK_OFF
+  GOAL_KICK
+}
+
+enum CoordinateSystem {
+  CANONICAL_105_68
+  NORMALIZED_0_1
+  RANGE_0_100
+  STATSBOMB_120_80
+  OPTA_100_100
+  METRICA_0_1
+  PROVIDER_SPECIFIC
+}
+
+enum HeatmapSubject {
+  PLAYER
+  TEAM
+}
+
+enum HeatmapType {
+  TOUCH
+  PASS_ORIGIN
+  PASS_DESTINATION
+  CARRY
+  SHOT
+  DEFENSIVE_ACTION
+  PRESSURE
+  COMBINED_ACTIVITY
+}
+
+enum HeatmapAlgorithm {
+  GRID_DENSITY
+  HEXBIN
+  GAUSSIAN_KDE
+}
+
+enum ShortlistStatus {
+  NEW
+  WATCHING
+  SCOUTED
+  INTERESTED
+  PRIORITY
+  REJECTED
+  SIGNED
+}
+
+enum ReportType {
+  PLAYER
+  CLUB
+  MATCH
+  PLAYER_COMPARISON
+  CUSTOM
 }
 
 enum ReportStatus {
   DRAFT
   PUBLISHED
+  ARCHIVED
 }
 
+enum ReportBlockType {
+  TITLE
+  EXECUTIVE_SUMMARY
+  IDENTITY
+  KEY_METRICS
+  PERCENTILES
+  RADAR
+  HEATMAP
+  SHOT_MAP
+  PASSING_NETWORK
+  TACTICAL_PROFILE
+  STRENGTHS
+  RISKS
+  SCOUT_NOTES
+  CLUB_FIT
+  COMPARABLE_PLAYERS
+  RECOMMENDATION
+  DATA_SOURCES
+  DATA_QUALITY
+}
+
+enum MetricDirection {
+  HIGHER_BETTER
+  LOWER_BETTER
+}
+
+enum QualitySubject {
+  PLAYER_SEASON
+  PLAYER_MATCH
+  TEAM_SEASON
+  TEAM_MATCH
+  MATCH
+  IMPORT
+}
+
+// ---------------------------------------------------------------------------
+// Identity & access (§62, §63)
+// ---------------------------------------------------------------------------
+
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
+  id           String    @id @default(uuid())
+  email        String    @unique
   displayName  String
   passwordHash String
-  role         UserRole @default(SCOUT)
-  active       Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  role         UserRole  @default(VIEWER)
+  active       Boolean   @default(true)
+  /// Bumped to invalidate every issued token for this user.
+  tokenVersion Int       @default(0)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  reports ScoutingReport[]
+  shortlists     Shortlist[]
+  shortlistAdds  ShortlistPlayer[]
+  notes          ScoutingNote[]
+  scoutRatings   ScoutRating[]
+  reports        Report[]
+  reportVersions ReportVersion[]
+  savedQueries   SavedQuery[]
+  queryRuns      QueryHistory[]
+  auditLogs      AuditLog[]
+  imports        DataImport[]
 
+  @@index([role])
   @@map("users")
 }
 
+// ---------------------------------------------------------------------------
+// Provider provenance (§11, §12, §13)
+// ---------------------------------------------------------------------------
+
+/// A source of football data. Licensing is part of the registry: open access
+/// is never assumed to mean unrestricted commercial redistribution (§13).
+model Provider {
+  id                    String       @id @default(uuid())
+  key                   String       @unique
+  name                  String
+  kind                  ProviderKind
+  website               String?
+  licenseName           String?
+  licenseUrl            String?
+  licenseNotes          String?
+  /// Explicit, conservative default: redistribution is NOT assumed.
+  commercialUseAllowed  Boolean      @default(false)
+  redistributionAllowed Boolean      @default(false)
+  attributionRequired   Boolean      @default(true)
+  enabled               Boolean      @default(true)
+  /// Non-secret configuration only. API keys live in the environment.
+  settings              Json         @default("{}")
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  versions ProviderVersion[]
+  datasets SourceDataset[]
+  imports  DataImport[]
+  mappings ExternalEntityMapping[]
+  events   Event[]
+  tracking TrackingSession[]
+
+  @@map("providers")
+}
+
+model ProviderVersion {
+  id            String   @id @default(uuid())
+  providerId    String
+  version       String
+  notes         String?
+  effectiveFrom DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  provider Provider        @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  datasets SourceDataset[]
+  imports  DataImport[]
+
+  @@unique([providerId, version])
+  @@map("provider_versions")
+}
+
+/// A named body of source data (a competition dump, a file drop, an API sync).
+model SourceDataset {
+  id                String   @id @default(uuid())
+  providerId        String
+  providerVersionId String?
+  key               String
+  name              String
+  description       String?
+  licenseName       String?
+  /// Path relative to RAW_DATA_ROOT - never absolute, so the raw archive can
+  /// move between a local disk, a NAS mount and object storage.
+  storagePath       String?
+  checksum          String?
+  recordCount       Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  provider        Provider         @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  providerVersion ProviderVersion? @relation(fields: [providerVersionId], references: [id], onDelete: SetNull)
+  records         SourceRecord[]
+  imports         DataImport[]
+
+  @@unique([providerId, key])
+  @@map("source_datasets")
+}
+
+/// Pointer to one raw provider record. The payload itself stays on disk
+/// (rawPath) unless it is small enough to be worth keeping inline.
+model SourceRecord {
+  id              String     @id @default(uuid())
+  sourceDatasetId String
+  dataImportId    String?
+  entityType      EntityType
+  externalId      String
+  rawPath         String?
+  payload         Json?
+  checksum        String?
+  createdAt       DateTime   @default(now())
+
+  dataset SourceDataset @relation(fields: [sourceDatasetId], references: [id], onDelete: Cascade)
+  import  DataImport?   @relation(fields: [dataImportId], references: [id], onDelete: SetNull)
+
+  @@unique([sourceDatasetId, entityType, externalId])
+  @@index([dataImportId])
+  @@map("source_records")
+}
+
+model DataImport {
+  id                String        @id @default(uuid())
+  providerId        String
+  providerVersionId String?
+  sourceDatasetId   String?
+  status            ImportStatus  @default(QUEUED)
+  trigger           ImportTrigger @default(MANUAL)
+  jobId             String?
+  requestedById     String?
+  params            Json          @default("{}")
+  startedAt         DateTime      @default(now())
+  finishedAt        DateTime?
+  recordsRead       Int           @default(0)
+  recordsWritten    Int           @default(0)
+  recordsSkipped    Int           @default(0)
+  errorCount        Int           @default(0)
+  warningCount      Int           @default(0)
+  /// Path of the archived raw payload, relative to RAW_DATA_ROOT.
+  rawPath           String?
+  analyticsVersion  String?
+  error             String?
+
+  provider        Provider          @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  providerVersion ProviderVersion?  @relation(fields: [providerVersionId], references: [id], onDelete: SetNull)
+  dataset         SourceDataset?    @relation(fields: [sourceDatasetId], references: [id], onDelete: SetNull)
+  requestedBy     User?             @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+  errors          DataImportError[]
+  sourceRecords   SourceRecord[]
+  events          Event[]
+
+  @@index([providerId, startedAt])
+  @@index([status])
+  @@map("data_imports")
+}
+
+model DataImportError {
+  id           String        @id @default(uuid())
+  dataImportId String
+  severity     IssueSeverity @default(ERROR)
+  stage        String
+  entityType   EntityType?
+  externalId   String?
+  message      String
+  details      Json          @default("{}")
+  createdAt    DateTime      @default(now())
+
+  import DataImport @relation(fields: [dataImportId], references: [id], onDelete: Cascade)
+
+  @@index([dataImportId, severity])
+  @@map("data_import_errors")
+}
+
+/// Sample size and confidence behind a metric or profile (§54).
+model DataQualityRecord {
+  id               String         @id @default(uuid())
+  subjectType      QualitySubject
+  subjectId        String
+  metricKey        String?
+  minutes          Int            @default(0)
+  matches          Int            @default(0)
+  sampleSize       Int            @default(0)
+  confidence       Confidence     @default(INSUFFICIENT)
+  missingFields    String[]       @default([])
+  providerKeys     String[]       @default([])
+  analyticsVersion String
+  computedAt       DateTime       @default(now())
+
+  @@unique([subjectType, subjectId, metricKey, analyticsVersion])
+  @@index([subjectType, subjectId])
+  @@map("data_quality_records")
+}
+
+/// Resolution of a provider's own identifier onto a ScoutIQ entity (§55).
+model ExternalEntityMapping {
+  id         String        @id @default(uuid())
+  providerId String
+  entityType EntityType
+  externalId String
+  internalId String
+  method     MappingMethod @default(PROVIDER_ID)
+  confidence Float         @default(1)
+  verified   Boolean       @default(false)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, entityType, externalId])
+  @@index([entityType, internalId])
+  @@map("external_entity_mappings")
+}
+
+// ---------------------------------------------------------------------------
+// Geography & competitions
+// ---------------------------------------------------------------------------
+
+model Country {
+  id            String  @id @default(uuid())
+  code          String  @unique
+  name          String
+  confederation String?
+
+  competitions Competition[]
+  teams        Team[]
+  players      Player[]
+  venues       Venue[]
+
+  @@map("countries")
+}
+
 model Competition {
-  id        String   @id @default(uuid())
+  id        String          @id @default(uuid())
   name      String
-  country   String
-  tier      Int      @default(1)
-  season    String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  countryId String?
+  tier      Int             @default(1)
+  type      CompetitionType @default(LEAGUE)
+  gender    Gender          @default(MALE)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
 
-  teams   Team[]
-  matches Match[]
+  country Country?            @relation(fields: [countryId], references: [id], onDelete: SetNull)
+  seasons CompetitionSeason[]
 
-  @@unique([name, season])
+  @@unique([name, countryId, gender])
+  @@index([countryId])
   @@map("competitions")
 }
 
-model Team {
-  id            String   @id @default(uuid())
-  name          String
-  shortName     String?
-  country       String
-  competitionId String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  competition Competition? @relation(fields: [competitionId], references: [id], onDelete: SetNull)
-  players     Player[]
-  homeMatches Match[]      @relation("HomeTeam")
-  awayMatches Match[]      @relation("AwayTeam")
-
-  @@unique([name, country])
-  @@index([competitionId])
-  @@map("teams")
-}
-
-model Player {
-  id          String    @id @default(uuid())
-  firstName   String
-  lastName    String
-  birthDate   DateTime?
-  nationality String?
-  position    String
-  footPref    String?
-  heightCm    Int?
-  teamId      String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  team           Team?             @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  matchStats     PlayerMatchStat[]
-  metrics        PlayerMetric[]
-  reports        ScoutingReport[]
-  externalRefs   ExternalRef[]
-
-  @@index([teamId])
-  @@index([position])
-  @@map("players")
-}
-
-model Match {
-  id            String   @id @default(uuid())
+model CompetitionSeason {
+  id            String    @id @default(uuid())
   competitionId String
-  homeTeamId    String
-  awayTeamId    String
-  kickoffAt     DateTime
-  homeGoals     Int?
-  awayGoals     Int?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  seasonName    String
+  startDate     DateTime?
+  endDate       DateTime?
+  createdAt     DateTime  @default(now())
 
-  competition Competition       @relation(fields: [competitionId], references: [id], onDelete: Cascade)
-  homeTeam    Team              @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Cascade)
-  awayTeam    Team              @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Cascade)
-  playerStats PlayerMatchStat[]
+  competition        Competition          @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  matches            Match[]
+  teamSeasons        TeamSeason[]
+  playerSeasons      PlayerSeason[]
+  playerPositions    PlayerPosition[]
+  playerSeasonMetric PlayerSeasonMetric[]
+  teamSeasonMetric   TeamSeasonMetric[]
+  playerStyles       PlayerStyleProfile[]
+  teamStyles         TeamStyleProfile[]
+  similarities       PlayerSimilarity[]
+  fitScores          PlayerFitScore[]
+  heatmaps           Heatmap[]
+  shortlists         Shortlist[]
 
-  @@index([competitionId, kickoffAt])
-  @@map("matches")
+  @@unique([competitionId, seasonName])
+  @@map("competition_seasons")
 }
 
-model PlayerMatchStat {
-  id                String   @id @default(uuid())
-  playerId          String
-  matchId           String
-  minutesPlayed     Int      @default(0)
-  goals             Int      @default(0)
-  assists           Int      @default(0)
-  shots             Int      @default(0)
-  xg                Float    @default(0)
-  xa                Float    @default(0)
-  passes            Int      @default(0)
-  passesCompleted   Int      @default(0)
-  progressivePasses Int      @default(0)
-  duelsWon          Int      @default(0)
-  duelsTotal        Int      @default(0)
-  createdAt         DateTime @default(now())
+model Venue {
+  id           String  @id @default(uuid())
+  name         String
+  city         String?
+  countryId    String?
+  capacity     Int?
+  pitchLengthM Float?
+  pitchWidthM  Float?
 
-  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
-  match  Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  country Country? @relation(fields: [countryId], references: [id], onDelete: SetNull)
+  matches Match[]
 
-  @@unique([playerId, matchId])
-  @@index([matchId])
-  @@map("player_match_stats")
+  @@unique([name, city])
+  @@map("venues")
 }
 
-/// Aggregated, per-90 analytics output produced by the analytics worker.
-model PlayerMetric {
-  id            String   @id @default(uuid())
-  playerId      String
-  season        String
-  minutesPlayed Int
-  matches       Int
-  goalsPer90    Float
-  assistsPer90  Float
-  xgPer90       Float
-  xaPer90       Float
-  passAccuracy  Float
-  progPassPer90 Float
-  duelWinRate   Float
-  /// 0-100 composite score, comparable within position + season.
-  scoutScore    Float
-  computedAt    DateTime @default(now())
+// ---------------------------------------------------------------------------
+// Teams
+// ---------------------------------------------------------------------------
 
-  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
-
-  @@unique([playerId, season])
-  @@index([season])
-  @@map("player_metrics")
-}
-
-model ScoutingReport {
-  id        String       @id @default(uuid())
-  playerId  String
-  authorId  String?
-  title     String
-  summary   String
-  rating    Int
-  status    ReportStatus @default(DRAFT)
-  /// Path of the rendered report relative to REPORT_ROOT - never absolute, so
-  /// the report root can move between machines without a data migration.
-  filePath  String?
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
-
-  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
-  author User?  @relation(fields: [authorId], references: [id], onDelete: SetNull)
-
-  @@index([playerId])
-  @@map("scouting_reports")
-}
-
-/// A configured data provider (file drop, HTTP API, ingest service, ...).
-model DataProvider {
+model Team {
   id        String   @id @default(uuid())
-  key       String   @unique
   name      String
-  enabled   Boolean  @default(true)
-  /// Non-secret provider settings. Secrets stay in the environment.
-  settings  Json     @default("{}")
+  shortName String?
+  countryId String?
+  founded   Int?
+  isDemo    Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  imports      ImportRun[]
-  externalRefs ExternalRef[]
+  country       Country?               @relation(fields: [countryId], references: [id], onDelete: SetNull)
+  aliases       TeamAlias[]
+  seasons       TeamSeason[]
+  memberships   PlayerTeamMembership[]
+  playerSeasons PlayerSeason[]
 
-  @@map("data_providers")
+  homeMatches   Match[]        @relation("HomeTeam")
+  awayMatches   Match[]        @relation("AwayTeam")
+  matchTeams    MatchTeam[]
+  lineups       Lineup[]
+  playerMatches PlayerMatch[]
+  substitutions Substitution[]
+  events        Event[]
+  possessions   Event[]        @relation("PossessionTeam")
+
+  matchMetrics        TeamMatchMetric[]
+  seasonMetrics       TeamSeasonMetric[]
+  playerMatchMetrics  PlayerMatchMetric[]
+  playerSeasonMetrics PlayerSeasonMetric[]
+  styleProfiles       TeamStyleProfile[]
+  fitScores           PlayerFitScore[]
+  heatmaps            Heatmap[]
+  notes               ScoutingNote[]
+  reports             Report[]
+
+  @@unique([name, countryId])
+  @@index([name])
+  @@map("teams")
 }
 
-model ImportRun {
-  id            String       @id @default(uuid())
-  providerId    String
-  status        ImportStatus @default(PENDING)
-  startedAt     DateTime     @default(now())
-  finishedAt    DateTime?
-  recordsRead   Int          @default(0)
-  recordsWritten Int         @default(0)
-  /// Path of the archived raw payload relative to RAW_DATA_ROOT.
-  rawPath       String?
-  error         String?
+model TeamAlias {
+  id     String  @id @default(uuid())
+  teamId String
+  alias  String
+  source String?
 
-  provider DataProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
 
-  @@index([providerId, startedAt])
-  @@map("import_runs")
+  @@unique([teamId, alias])
+  @@index([alias])
+  @@map("team_aliases")
 }
 
-/// Maps a provider's own identifier to a ScoutIQ player, so re-imports are
-/// idempotent and providers stay replaceable.
-model ExternalRef {
+model TeamSeason {
+  id                  String @id @default(uuid())
+  teamId              String
+  competitionSeasonId String
+  finalPosition       Int?
+  points              Int?
+
+  team   Team              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  season CompetitionSeason @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, competitionSeasonId])
+  @@map("team_seasons")
+}
+
+// ---------------------------------------------------------------------------
+// Players
+// ---------------------------------------------------------------------------
+
+model Player {
+  id              String        @id @default(uuid())
+  firstName       String
+  lastName        String
+  fullName        String
+  knownAs         String?
+  dateOfBirth     DateTime?
+  countryId       String?
+  heightCm        Int?
+  weightKg        Int?
+  preferredFoot   PreferredFoot @default(UNKNOWN)
+  primaryPosition String
+  positionGroup   String
+  isDemo          Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  country     Country?               @relation(fields: [countryId], references: [id], onDelete: SetNull)
+  aliases     PlayerAlias[]
+  seasons     PlayerSeason[]
+  memberships PlayerTeamMembership[]
+  positions   PlayerPosition[]
+
+  playerMatches  PlayerMatch[]
+  events         Event[]
+  passRecipients PassEvent[]              @relation("PassRecipient")
+  substitutedOut Substitution[]           @relation("PlayerOut")
+  substitutedIn  Substitution[]           @relation("PlayerIn")
+  trackingPoints TrackingPlayerPosition[]
+
+  matchMetrics     PlayerMatchMetric[]
+  seasonMetrics    PlayerSeasonMetric[]
+  styleProfiles    PlayerStyleProfile[]
+  roleScores       PlayerRoleScore[]
+  similarTo        PlayerSimilarity[]   @relation("SimilaritySubject")
+  similarFrom      PlayerSimilarity[]   @relation("SimilarityComparison")
+  fitScores        PlayerFitScore[]
+  heatmaps         Heatmap[]
+  shortlistEntries ShortlistPlayer[]
+  notes            ScoutingNote[]
+  scoutRatings     ScoutRating[]
+  reports          Report[]
+
+  @@index([fullName])
+  @@index([lastName])
+  @@index([dateOfBirth])
+  @@index([positionGroup])
+  @@index([countryId])
+  @@map("players")
+}
+
+model PlayerAlias {
+  id       String  @id @default(uuid())
+  playerId String
+  alias    String
+  source   String?
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, alias])
+  @@index([alias])
+  @@map("player_aliases")
+}
+
+model PlayerSeason {
+  id                  String  @id @default(uuid())
+  playerId            String
+  competitionSeasonId String
+  teamId              String?
+  shirtNumber         Int?
+  minutes             Int     @default(0)
+  matches             Int     @default(0)
+  starts              Int     @default(0)
+
+  player Player            @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  season CompetitionSeason @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+  team   Team?             @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@unique([playerId, competitionSeasonId, teamId])
+  @@index([competitionSeasonId])
+  @@map("player_seasons")
+}
+
+model PlayerTeamMembership {
+  id          String         @id @default(uuid())
+  playerId    String
+  teamId      String
+  type        MembershipType @default(PERMANENT)
+  startDate   DateTime?
+  endDate     DateTime?
+  shirtNumber Int?
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@index([playerId])
+  @@index([teamId])
+  @@map("player_team_memberships")
+}
+
+model PlayerPosition {
+  id                  String  @id @default(uuid())
+  playerId            String
+  competitionSeasonId String?
+  position            String
+  positionGroup       String
+  isPrimary           Boolean @default(false)
+  minutes             Int     @default(0)
+
+  player Player             @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  season CompetitionSeason? @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, competitionSeasonId, position])
+  @@index([positionGroup])
+  @@map("player_positions")
+}
+
+// ---------------------------------------------------------------------------
+// Matches & lineups
+// ---------------------------------------------------------------------------
+
+model Match {
+  id                  String      @id @default(uuid())
+  competitionSeasonId String
+  homeTeamId          String
+  awayTeamId          String
+  venueId             String?
+  kickoffAt           DateTime
+  status              MatchStatus @default(COMPLETED)
+  matchweek           Int?
+  stage               String?
+  homeScore           Int?
+  awayScore           Int?
+  attendance          Int?
+  isDemo              Boolean     @default(false)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  season   CompetitionSeason @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+  homeTeam Team              @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeam Team              @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  venue    Venue?            @relation(fields: [venueId], references: [id], onDelete: SetNull)
+
+  periods       MatchPeriod[]
+  matchTeams    MatchTeam[]
+  officials     MatchOfficial[]
+  lineups       Lineup[]
+  playerMatches PlayerMatch[]
+  substitutions Substitution[]
+  events        Event[]
+  tracking      TrackingSession[]
+
+  playerMetrics PlayerMatchMetric[]
+  teamMetrics   TeamMatchMetric[]
+  heatmaps      Heatmap[]
+  notes         ScoutingNote[]
+  scoutRatings  ScoutRating[]
+  reports       Report[]
+
+  @@unique([competitionSeasonId, homeTeamId, awayTeamId, kickoffAt])
+  @@index([kickoffAt])
+  @@index([homeTeamId])
+  @@index([awayTeamId])
+  @@index([competitionSeasonId, kickoffAt])
+  @@map("matches")
+}
+
+model MatchPeriod {
+  id          String @id @default(uuid())
+  matchId     String
+  period      Int
+  startMs     Int    @default(0)
+  endMs       Int    @default(0)
+  durationSec Int    @default(0)
+
+  match  Match   @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  events Event[]
+
+  @@unique([matchId, period])
+  @@map("match_periods")
+}
+
+/// Per-team match record: the "team row" of a match, kept separate from the
+/// derived team_match_metrics so imported facts and computed values never mix.
+model MatchTeam {
+  id        String  @id @default(uuid())
+  matchId   String
+  teamId    String
+  isHome    Boolean
+  formation String?
+  goals     Int     @default(0)
+  ownGoals  Int     @default(0)
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  team  Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, teamId])
+  @@map("match_teams")
+}
+
+model MatchOfficial {
+  id      String @id @default(uuid())
+  matchId String
+  name    String
+  role    String @default("REFEREE")
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@index([matchId])
+  @@map("match_officials")
+}
+
+model Lineup {
+  id        String  @id @default(uuid())
+  matchId   String
+  teamId    String
+  formation String?
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  team  Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, teamId])
+  @@map("lineups")
+}
+
+model PlayerMatch {
+  id            String  @id @default(uuid())
+  matchId       String
+  playerId      String
+  teamId        String
+  position      String?
+  positionGroup String?
+  shirtNumber   Int?
+  isStarter     Boolean @default(false)
+  minutesPlayed Int     @default(0)
+  minuteOn      Int?
+  minuteOff     Int?
+  captain       Boolean @default(false)
+
+  match  Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, playerId])
+  @@index([playerId])
+  @@index([teamId])
+  @@map("player_matches")
+}
+
+model Substitution {
+  id          String  @id @default(uuid())
+  matchId     String
+  teamId      String
+  playerOutId String
+  playerInId  String
+  minute      Int
+  second      Int     @default(0)
+  reason      String?
+
+  match     Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  team      Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  playerOut Player @relation("PlayerOut", fields: [playerOutId], references: [id], onDelete: Cascade)
+  playerIn  Player @relation("PlayerIn", fields: [playerInId], references: [id], onDelete: Cascade)
+
+  @@index([matchId])
+  @@map("substitutions")
+}
+
+// ---------------------------------------------------------------------------
+// Events
+//
+// One base table with the columns every event shares, plus typed detail tables
+// for the event families that carry their own attributes. Coordinates are
+// always canonical metres (105 x 68) after the transformation layer (§33).
+// ---------------------------------------------------------------------------
+
+model Event {
+  id               String    @id @default(uuid())
+  matchId          String
+  matchPeriodId    String?
+  teamId           String?
+  playerId         String?
+  possessionTeamId String?
+  type             EventType
+  subType          String?
+  minute           Int       @default(0)
+  second           Int       @default(0)
+  timestampMs      Int       @default(0)
+  sequenceIndex    Int       @default(0)
+  possessionId     Int?
+  playPattern      String?
+  underPressure    Boolean   @default(false)
+  outcome          String?
+  durationSec      Float?
+  x                Float?
+  y                Float?
+  endX             Float?
+  endY             Float?
+  /// Provenance (§11): which provider row produced this event.
+  providerId       String?
+  dataImportId     String?
+  providerEventId  String?
+  raw              Json?
+  createdAt        DateTime  @default(now())
+
+  match          Match        @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  period         MatchPeriod? @relation(fields: [matchPeriodId], references: [id], onDelete: SetNull)
+  team           Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  possessionTeam Team?        @relation("PossessionTeam", fields: [possessionTeamId], references: [id], onDelete: SetNull)
+  player         Player?      @relation(fields: [playerId], references: [id], onDelete: SetNull)
+  provider       Provider?    @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  import         DataImport?  @relation(fields: [dataImportId], references: [id], onDelete: SetNull)
+
+  pass         PassEvent?
+  shot         ShotEvent?
+  carry        CarryEvent?
+  dribble      DribbleEvent?
+  duel         DuelEvent?
+  tackle       TackleEvent?
+  interception InterceptionEvent?
+  pressure     PressureEvent?
+  recovery     RecoveryEvent?
+  clearance    ClearanceEvent?
+  foul         FoulEvent?
+  card         CardEvent?
+  goal         GoalEvent?
+  setPiece     SetPieceEvent?
+  touch        TouchEvent?
+  notes        ScoutingNote[]
+
+  @@unique([providerId, providerEventId])
+  @@index([matchId])
+  @@index([playerId])
+  @@index([teamId])
+  @@index([timestampMs])
+  @@index([matchId, timestampMs])
+  @@index([matchId, type])
+  @@index([playerId, type])
+  @@map("events")
+}
+
+model PassEvent {
+  eventId        String     @id
+  recipientId    String?
+  lengthM        Float      @default(0)
+  angleRad       Float      @default(0)
+  height         PassHeight @default(UNKNOWN)
+  bodyPart       BodyPart   @default(UNKNOWN)
+  technique      String?
+  completed      Boolean    @default(true)
+  isCross        Boolean    @default(false)
+  isSwitch       Boolean    @default(false)
+  isThroughBall  Boolean    @default(false)
+  isCutback      Boolean    @default(false)
+  isProgressive  Boolean    @default(false)
+  intoFinalThird Boolean    @default(false)
+  intoBox        Boolean    @default(false)
+  isKeyPass      Boolean    @default(false)
+  isAssist       Boolean    @default(false)
+  xa             Float?
+
+  event     Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  recipient Player? @relation("PassRecipient", fields: [recipientId], references: [id], onDelete: SetNull)
+
+  @@index([recipientId])
+  @@map("pass_events")
+}
+
+model ShotEvent {
+  eventId    String   @id
+  xg         Float    @default(0)
+  providerXg Float?
+  bodyPart   BodyPart @default(UNKNOWN)
+  technique  String?
+  firstTime  Boolean  @default(false)
+  isPenalty  Boolean  @default(false)
+  isOwnGoal  Boolean  @default(false)
+  isSetPiece Boolean  @default(false)
+  onTarget   Boolean  @default(false)
+  blocked    Boolean  @default(false)
+  isGoal     Boolean  @default(false)
+  endX       Float?
+  endY       Float?
+  endZ       Float?
+  distanceM  Float?
+  angleDeg   Float?
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("shot_events")
+}
+
+model CarryEvent {
+  eventId              String  @id
+  distanceM            Float   @default(0)
+  progressiveDistanceM Float   @default(0)
+  isProgressive        Boolean @default(false)
+  intoFinalThird       Boolean @default(false)
+  intoBox              Boolean @default(false)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("carry_events")
+}
+
+model DribbleEvent {
+  eventId   String  @id
+  completed Boolean @default(false)
+  nutmeg    Boolean @default(false)
+  overrun   Boolean @default(false)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("dribble_events")
+}
+
+model DuelEvent {
+  eventId  String   @id
+  duelType DuelType @default(GROUND)
+  won      Boolean  @default(false)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("duel_events")
+}
+
+model TackleEvent {
+  eventId      String  @id
+  won          Boolean @default(false)
+  dispossessed Boolean @default(false)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("tackle_events")
+}
+
+model InterceptionEvent {
+  eventId String  @id
+  won     Boolean @default(true)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("interception_events")
+}
+
+model PressureEvent {
+  eventId      String  @id
+  durationSec  Float   @default(0)
+  counterpress Boolean @default(false)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("pressure_events")
+}
+
+model RecoveryEvent {
+  eventId   String  @id
+  failed    Boolean @default(false)
+  offensive Boolean @default(false)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("recovery_events")
+}
+
+model ClearanceEvent {
+  eventId  String   @id
+  bodyPart BodyPart @default(UNKNOWN)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("clearance_events")
+}
+
+model FoulEvent {
+  eventId   String  @id
+  committed Boolean @default(true)
+  advantage Boolean @default(false)
+  penalty   Boolean @default(false)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("foul_events")
+}
+
+model CardEvent {
+  eventId  String   @id
+  cardType CardType @default(YELLOW)
+  reason   String?
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("card_events")
+}
+
+model GoalEvent {
+  eventId        String   @id
+  shotEventId    String?
+  assistPlayerId String?
+  ownGoal        Boolean  @default(false)
+  penalty        Boolean  @default(false)
+  bodyPart       BodyPart @default(UNKNOWN)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("goal_events")
+}
+
+model SetPieceEvent {
+  eventId      String       @id
+  setPieceType SetPieceType
+  deliveryZone String?
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("set_piece_events")
+}
+
+model TouchEvent {
+  eventId    String  @id
+  successful Boolean @default(true)
+  inBox      Boolean @default(false)
+  finalThird Boolean @default(false)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("touch_events")
+}
+
+// ---------------------------------------------------------------------------
+// Tracking (§15, §37)
+//
+// Frames are stored so tracking is queryable in SQL, but the application never
+// serves raw frames to a browser - it serves the aggregates below (§59).
+// ---------------------------------------------------------------------------
+
+model TrackingSession {
+  id               String           @id @default(uuid())
+  matchId          String
+  providerId       String?
+  frameRateHz      Float            @default(10)
+  frameCount       Int              @default(0)
+  startMs          Int              @default(0)
+  endMs            Int              @default(0)
+  coordinateSystem CoordinateSystem @default(CANONICAL_105_68)
+  /// Raw tracking files stay on disk, relative to RAW_DATA_ROOT.
+  storagePath      String?
+  createdAt        DateTime         @default(now())
+
+  match      Match               @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  provider   Provider?           @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  frames     TrackingFrame[]
+  aggregates TrackingAggregate[]
+
+  @@index([matchId])
+  @@map("tracking_sessions")
+}
+
+model TrackingFrame {
+  id                String  @id @default(uuid())
+  trackingSessionId String
+  frameIndex        Int
+  timestampMs       Int
+  period            Int     @default(1)
+  ballInPlay        Boolean @default(true)
+  possessionTeamId  String?
+
+  session         TrackingSession          @relation(fields: [trackingSessionId], references: [id], onDelete: Cascade)
+  playerPositions TrackingPlayerPosition[]
+  ballPositions   TrackingBallPosition[]
+
+  @@unique([trackingSessionId, frameIndex])
+  @@index([trackingSessionId, timestampMs])
+  @@map("tracking_frames")
+}
+
+model TrackingPlayerPosition {
+  id              String  @id @default(uuid())
+  trackingFrameId String
+  playerId        String?
+  teamId          String?
+  x               Float
+  y               Float
+  speedMs         Float?
+  distanceM       Float?
+
+  frame  TrackingFrame @relation(fields: [trackingFrameId], references: [id], onDelete: Cascade)
+  player Player?       @relation(fields: [playerId], references: [id], onDelete: SetNull)
+
+  @@index([trackingFrameId])
+  @@index([playerId])
+  @@map("tracking_player_positions")
+}
+
+model TrackingBallPosition {
+  id              String @id @default(uuid())
+  trackingFrameId String
+  x               Float
+  y               Float
+  z               Float?
+  speedMs         Float?
+
+  frame TrackingFrame @relation(fields: [trackingFrameId], references: [id], onDelete: Cascade)
+
+  @@index([trackingFrameId])
+  @@map("tracking_ball_positions")
+}
+
+/// Pre-aggregated tactical output of a tracking session (§37): this is what the
+/// browser receives, never the frames.
+model TrackingAggregate {
+  id                 String   @id @default(uuid())
+  trackingSessionId  String
+  teamId             String?
+  playerId           String?
+  phase              String   @default("ALL")
+  avgX               Float?
+  avgY               Float?
+  centroidX          Float?
+  centroidY          Float?
+  teamWidthM         Float?
+  teamDepthM         Float?
+  compactness        Float?
+  convexHullAreaM2   Float?
+  defensiveLineM     Float?
+  attackingLineM     Float?
+  lineDistanceM      Float?
+  distanceM          Float?
+  highSpeedDistanceM Float?
+  sprintCount        Int?
+  maxSpeedMs         Float?
+  analyticsVersion   String
+  computedAt         DateTime @default(now())
+
+  session TrackingSession @relation(fields: [trackingSessionId], references: [id], onDelete: Cascade)
+
+  @@unique([trackingSessionId, teamId, playerId, phase, analyticsVersion])
+  @@index([playerId])
+  @@map("tracking_aggregates")
+}
+
+// ---------------------------------------------------------------------------
+// Derived metrics (§25, §83)
+//
+// Every derived row carries the analytics version that produced it (§53), so
+// formulas can evolve without invalidating historical reports.
+// ---------------------------------------------------------------------------
+
+model PlayerMatchMetric {
+  id       String  @id @default(uuid())
+  playerId String
+  matchId  String
+  teamId   String?
+  minutes  Int     @default(0)
+
+  passes            Float @default(0)
+  passesCompleted   Float @default(0)
+  passAccuracy      Float @default(0)
+  progressivePasses Float @default(0)
+  passesFinalThird  Float @default(0)
+  passesIntoBox     Float @default(0)
+  keyPasses         Float @default(0)
+  throughBalls      Float @default(0)
+  switches          Float @default(0)
+  crosses           Float @default(0)
+  longPasses        Float @default(0)
+
+  carries            Float @default(0)
+  progressiveCarries Float @default(0)
+  carriesFinalThird  Float @default(0)
+  carriesIntoBox     Float @default(0)
+  dribbles           Float @default(0)
+  dribblesCompleted  Float @default(0)
+  progressiveActions Float @default(0)
+
+  xa                Float @default(0)
+  chancesCreated    Float @default(0)
+  touches           Float @default(0)
+  touchesFinalThird Float @default(0)
+  touchesBox        Float @default(0)
+
+  shots         Float @default(0)
+  shotsOnTarget Float @default(0)
+  goals         Float @default(0)
+  xg            Float @default(0)
+  npxg          Float @default(0)
+  xgPerShot     Float @default(0)
+  assists       Float @default(0)
+
+  tackles           Float @default(0)
+  tacklesWon        Float @default(0)
+  interceptions     Float @default(0)
+  pressures         Float @default(0)
+  counterpressures  Float @default(0)
+  recoveries        Float @default(0)
+  blocks            Float @default(0)
+  clearances        Float @default(0)
+  defensiveDuels    Float @default(0)
+  defensiveDuelsWon Float @default(0)
+  aerialDuels       Float @default(0)
+  aerialDuelsWon    Float @default(0)
+  foulsCommitted    Float @default(0)
+
+  distanceM          Float?
+  highSpeedDistanceM Float?
+  sprintCount        Float?
+  maxSpeedMs         Float?
+
+  analyticsVersion String   @default("scoutiq-analytics-v1.0")
+  computedAt       DateTime @default(now())
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  match  Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  team   Team?  @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@unique([playerId, matchId, analyticsVersion])
+  @@index([playerId])
+  @@index([matchId])
+  @@map("player_match_metrics")
+}
+
+/// Season aggregate. Raw totals AND per-90 values are stored so SQL users do
+/// not have to re-derive normalisation themselves (§26).
+model PlayerSeasonMetric {
+  id                  String  @id @default(uuid())
+  playerId            String
+  competitionSeasonId String
+  teamId              String?
+  positionGroup       String
+  minutes             Int     @default(0)
+  matches             Int     @default(0)
+  starts              Int     @default(0)
+
+  passesP90            Float @default(0)
+  passAccuracy         Float @default(0)
+  progressivePassesP90 Float @default(0)
+  passesFinalThirdP90  Float @default(0)
+  passesIntoBoxP90     Float @default(0)
+  keyPassesP90         Float @default(0)
+  crossesP90           Float @default(0)
+  longPassesP90        Float @default(0)
+
+  progressiveCarriesP90 Float @default(0)
+  carriesFinalThirdP90  Float @default(0)
+  carriesIntoBoxP90     Float @default(0)
+  dribblesP90           Float @default(0)
+  dribbleSuccessRate    Float @default(0)
+  progressiveActionsP90 Float @default(0)
+
+  xaP90                Float @default(0)
+  chancesCreatedP90    Float @default(0)
+  touchesP90           Float @default(0)
+  touchesFinalThirdP90 Float @default(0)
+  touchesBoxP90        Float @default(0)
+
+  shotsP90         Float @default(0)
+  shotsOnTargetP90 Float @default(0)
+  goalsP90         Float @default(0)
+  xgP90            Float @default(0)
+  npxgP90          Float @default(0)
+  xgPerShot        Float @default(0)
+  assistsP90       Float @default(0)
+
+  tacklesP90           Float @default(0)
+  tackleSuccessRate    Float @default(0)
+  interceptionsP90     Float @default(0)
+  pressuresP90         Float @default(0)
+  counterpressuresP90  Float @default(0)
+  recoveriesP90        Float @default(0)
+  blocksP90            Float @default(0)
+  clearancesP90        Float @default(0)
+  defensiveDuelsP90    Float @default(0)
+  defensiveDuelWinRate Float @default(0)
+  aerialDuelsP90       Float @default(0)
+  aerialDuelWinRate    Float @default(0)
+
+  distanceP90          Float?
+  highSpeedDistanceP90 Float?
+  sprintCountP90       Float?
+  maxSpeedMs           Float?
+
+  /// Totals kept alongside rates so sample size is always visible (§54).
+  totals           Json       @default("{}")
+  confidence       Confidence @default(INSUFFICIENT)
+  analyticsVersion String     @default("scoutiq-analytics-v1.0")
+  computedAt       DateTime   @default(now())
+
+  player Player            @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  season CompetitionSeason @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+  team   Team?             @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@unique([playerId, competitionSeasonId, analyticsVersion])
+  @@index([competitionSeasonId, positionGroup])
+  @@index([playerId])
+  @@map("player_season_metrics")
+}
+
+model TeamMatchMetric {
+  id      String @id @default(uuid())
+  teamId  String
+  matchId String
+
+  possession        Float  @default(0)
+  passes            Float  @default(0)
+  passAccuracy      Float  @default(0)
+  progressivePasses Float  @default(0)
+  finalThirdEntries Float  @default(0)
+  boxEntries        Float  @default(0)
+  shots             Float  @default(0)
+  shotsOnTarget     Float  @default(0)
+  xg                Float  @default(0)
+  goals             Float  @default(0)
+  pressures         Float  @default(0)
+  counterpressures  Float  @default(0)
+  recoveries        Float  @default(0)
+  tackles           Float  @default(0)
+  interceptions     Float  @default(0)
+  fieldTilt         Float  @default(0)
+  ppda              Float?
+  directness        Float  @default(0)
+  crosses           Float  @default(0)
+
+  analyticsVersion String   @default("scoutiq-analytics-v1.0")
+  computedAt       DateTime @default(now())
+
+  team  Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, matchId, analyticsVersion])
+  @@index([matchId])
+  @@map("team_match_metrics")
+}
+
+model TeamSeasonMetric {
+  id                  String @id @default(uuid())
+  teamId              String
+  competitionSeasonId String
+  matches             Int    @default(0)
+
+  possession           Float  @default(0)
+  passesP90            Float  @default(0)
+  passAccuracy         Float  @default(0)
+  progressionP90       Float  @default(0)
+  xgP90                Float  @default(0)
+  xgAgainstP90         Float  @default(0)
+  shotsP90             Float  @default(0)
+  pressuresP90         Float  @default(0)
+  recoveriesP90        Float  @default(0)
+  finalThirdEntriesP90 Float  @default(0)
+  boxEntriesP90        Float  @default(0)
+  fieldTilt            Float  @default(0)
+  ppda                 Float?
+  directness           Float  @default(0)
+
+  confidence       Confidence @default(INSUFFICIENT)
+  analyticsVersion String     @default("scoutiq-analytics-v1.0")
+  computedAt       DateTime   @default(now())
+
+  team   Team              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  season CompetitionSeason @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, competitionSeasonId, analyticsVersion])
+  @@map("team_season_metrics")
+}
+
+// ---------------------------------------------------------------------------
+// Roles, styles, similarity, fit (§27-§32, §84, §85)
+//
+// Role definitions are DATA, not code: a new scouting model is a row, not a
+// redeployment.
+// ---------------------------------------------------------------------------
+
+model PlayerRole {
+  id            String   @id @default(uuid())
+  key           String   @unique
+  name          String
+  positionGroup String
+  description   String?
+  minMinutes    Int      @default(450)
+  isSystem      Boolean  @default(true)
+  active        Boolean  @default(true)
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  requirements PlayerRoleRequirement[]
+  scores       PlayerRoleScore[]
+
+  @@index([positionGroup])
+  @@map("player_roles")
+}
+
+model PlayerRoleRequirement {
+  id            String          @id @default(uuid())
+  playerRoleId  String
+  metricKey     String
+  weight        Float           @default(1)
+  direction     MetricDirection @default(HIGHER_BETTER)
+  minPercentile Float?
+  description   String?
+
+  role PlayerRole @relation(fields: [playerRoleId], references: [id], onDelete: Cascade)
+
+  @@unique([playerRoleId, metricKey])
+  @@map("player_role_requirements")
+}
+
+/// Result of matching a player against a role. Stores the full breakdown so
+/// no score is a black box (§85).
+model PlayerRoleScore {
+  id                  String     @id @default(uuid())
+  playerId            String
+  playerRoleId        String
+  competitionSeasonId String?
+  score               Float
+  rank                Int?
+  isPrimary           Boolean    @default(false)
+  confidence          Confidence @default(INSUFFICIENT)
+  /// [{ metricKey, value, percentile, weight, contribution }]
+  breakdown           Json       @default("[]")
+  sampleMinutes       Int        @default(0)
+  analyticsVersion    String     @default("scoutiq-analytics-v1.0")
+  computedAt          DateTime   @default(now())
+
+  player Player     @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  role   PlayerRole @relation(fields: [playerRoleId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, playerRoleId, competitionSeasonId, analyticsVersion])
+  @@index([playerRoleId, score])
+  @@map("player_role_scores")
+}
+
+/// Player DNA (§27) plus the style vector used for similarity and club fit.
+model PlayerStyleProfile {
+  id                  String     @id @default(uuid())
+  playerId            String
+  competitionSeasonId String
+  /// { Passing: 0-100, Progression: 0-100, ... } - the 11 DNA categories.
+  dna                 Json       @default("{}")
+  /// Percentile vector of the underlying metrics, used by similarity.
+  styleVector         Json       @default("{}")
+  /// Which metric fed which category, with weights (§85).
+  inputs              Json       @default("{}")
+  referencePopulation String?
+  sampleMinutes       Int        @default(0)
+  sampleMatches       Int        @default(0)
+  confidence          Confidence @default(INSUFFICIENT)
+  analyticsVersion    String     @default("scoutiq-analytics-v1.0")
+  computedAt          DateTime   @default(now())
+
+  player Player            @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  season CompetitionSeason @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, competitionSeasonId, analyticsVersion])
+  @@map("player_style_profiles")
+}
+
+model TeamStyleProfile {
+  id                  String     @id @default(uuid())
+  teamId              String
+  competitionSeasonId String
+  /// The 14 style dimensions of §31, each 0-100.
+  style               Json       @default("{}")
+  inputs              Json       @default("{}")
+  sampleMatches       Int        @default(0)
+  confidence          Confidence @default(INSUFFICIENT)
+  analyticsVersion    String     @default("scoutiq-analytics-v1.0")
+  computedAt          DateTime   @default(now())
+
+  team   Team              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  season CompetitionSeason @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, competitionSeasonId, analyticsVersion])
+  @@map("team_style_profiles")
+}
+
+model PlayerSimilarity {
+  id                  String   @id @default(uuid())
+  playerId            String
+  comparisonPlayerId  String
+  competitionSeasonId String?
+  positionGroup       String
+  similarity          Float
+  /// Per-dimension agreement and the biggest differences (§30).
+  breakdown           Json     @default("{}")
+  analyticsVersion    String   @default("scoutiq-analytics-v1.0")
+  computedAt          DateTime @default(now())
+
+  player     Player             @relation("SimilaritySubject", fields: [playerId], references: [id], onDelete: Cascade)
+  comparison Player             @relation("SimilarityComparison", fields: [comparisonPlayerId], references: [id], onDelete: Cascade)
+  season     CompetitionSeason? @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, comparisonPlayerId, competitionSeasonId, analyticsVersion])
+  @@index([playerId, similarity])
+  @@map("player_similarity")
+}
+
+/// Analytical fit between a player's style and a team's style. Presented as a
+/// model output, never as objective truth (§32).
+model PlayerFitScore {
+  id                  String   @id @default(uuid())
+  playerId            String
+  teamId              String
+  competitionSeasonId String?
+  fitScore            Float
+  breakdown           Json     @default("{}")
+  analyticsVersion    String   @default("scoutiq-analytics-v1.0")
+  computedAt          DateTime @default(now())
+
+  player Player             @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  team   Team               @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  season CompetitionSeason? @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, teamId, competitionSeasonId, analyticsVersion])
+  @@index([teamId, fitScore])
+  @@map("player_fit_scores")
+}
+
+// ---------------------------------------------------------------------------
+// Heatmaps & zones (§34-§36)
+// ---------------------------------------------------------------------------
+
+model Heatmap {
+  id                  String           @id @default(uuid())
+  subjectType         HeatmapSubject
+  playerId            String?
+  teamId              String?
+  matchId             String?
+  competitionSeasonId String?
+  type                HeatmapType
+  algorithm           HeatmapAlgorithm @default(GRID_DENSITY)
+  gridCols            Int              @default(24)
+  gridRows            Int              @default(16)
+  bandwidth           Float?
+  /// Minute range, possession phase, event filter - whatever produced it.
+  filters             Json             @default("{}")
+  totalWeight         Float            @default(0)
+  maxValue            Float            @default(0)
+  sampleSize          Int              @default(0)
+  analyticsVersion    String           @default("scoutiq-analytics-v1.0")
+  computedAt          DateTime         @default(now())
+
+  player Player?                @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  team   Team?                  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  match  Match?                 @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  season CompetitionSeason?     @relation(fields: [competitionSeasonId], references: [id], onDelete: Cascade)
+  points HeatmapPoint[]
+  zones  HeatmapZoneStatistic[]
+
+  @@index([playerId, type])
+  @@index([teamId, type])
+  @@index([matchId])
+  @@map("heatmaps")
+}
+
+model HeatmapPoint {
+  id        String @id @default(uuid())
+  heatmapId String
+  col       Int
+  row       Int
+  x         Float
+  y         Float
+  value     Float  @default(0)
+  count     Int    @default(0)
+
+  heatmap Heatmap @relation(fields: [heatmapId], references: [id], onDelete: Cascade)
+
+  @@unique([heatmapId, col, row])
+  @@map("heatmap_points")
+}
+
+/// Tactical zone activity: 3 thirds x 5 lanes, and the 5x4 grid (§36).
+model HeatmapZoneStatistic {
+  id                String  @id @default(uuid())
+  heatmapId         String?
+  playerId          String?
+  teamId            String?
+  matchId           String?
+  zoneScheme        String  @default("THIRDS_LANES")
+  zoneKey           String
+  zoneRow           Int
+  zoneCol           Int
+  touches           Float   @default(0)
+  passes            Float   @default(0)
+  carries           Float   @default(0)
+  shots             Float   @default(0)
+  defensiveActions  Float   @default(0)
+  pressures         Float   @default(0)
+  possessionTimeSec Float   @default(0)
+  analyticsVersion  String  @default("scoutiq-analytics-v1.0")
+
+  heatmap Heatmap? @relation(fields: [heatmapId], references: [id], onDelete: Cascade)
+
+  @@index([heatmapId])
+  @@index([playerId, zoneScheme])
+  @@index([teamId, zoneScheme])
+  @@map("heatmap_zone_statistics")
+}
+
+// ---------------------------------------------------------------------------
+// Scouting workflow (§47, §48, §49)
+// ---------------------------------------------------------------------------
+
+model Shortlist {
+  id                  String   @id @default(uuid())
+  name                String
+  description         String?
+  ownerId             String
+  competitionSeasonId String?
+  positionGroup       String?
+  archived            Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  owner   User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  season  CompetitionSeason? @relation(fields: [competitionSeasonId], references: [id], onDelete: SetNull)
+  players ShortlistPlayer[]
+  notes   ScoutingNote[]
+
+  @@index([ownerId])
+  @@map("shortlists")
+}
+
+model ShortlistPlayer {
+  id          String          @id @default(uuid())
+  shortlistId String
+  playerId    String
+  status      ShortlistStatus @default(NEW)
+  priority    Int             @default(3)
+  /// Human scout rating, kept separate from analytical scores (§49).
+  scoutRating Int?
+  notes       String?
+  addedById   String?
+  addedAt     DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  shortlist Shortlist @relation(fields: [shortlistId], references: [id], onDelete: Cascade)
+  player    Player    @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  addedBy   User?     @relation(fields: [addedById], references: [id], onDelete: SetNull)
+
+  @@unique([shortlistId, playerId])
+  @@index([playerId])
+  @@index([status])
+  @@map("shortlist_players")
+}
+
+model ScoutingNote {
+  id          String   @id @default(uuid())
+  authorId    String
+  playerId    String?
+  teamId      String?
+  matchId     String?
+  eventId     String?
+  shortlistId String?
+  /// Match clock the observation refers to, e.g. 34:12.
+  minute      Int?
+  second      Int?
+  body        String
+  tags        String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  author    User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  player    Player?    @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  team      Team?      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  match     Match?     @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  event     Event?     @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  shortlist Shortlist? @relation(fields: [shortlistId], references: [id], onDelete: SetNull)
+
+  @@index([playerId])
+  @@index([matchId])
+  @@index([authorId])
+  @@map("scouting_notes")
+}
+
+/// Human scouting judgement. Never mixed into automated analytics without an
+/// explicit configuration (§49).
+model ScoutRating {
+  id        String   @id @default(uuid())
+  playerId  String
+  authorId  String
+  matchId   String?
+  technical Int
+  tactical  Int
+  physical  Int
+  mental    Int
+  potential Int
+  overall   Int
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  match  Match? @relation(fields: [matchId], references: [id], onDelete: SetNull)
+
+  @@index([playerId])
+  @@map("scout_ratings")
+}
+
+// ---------------------------------------------------------------------------
+// Reports (§50, §51, §52, §86)
+// ---------------------------------------------------------------------------
+
+model Report {
+  id              String       @id @default(uuid())
+  type            ReportType
+  title           String
+  status          ReportStatus @default(DRAFT)
+  authorId        String?
+  subjectPlayerId String?
+  subjectTeamId   String?
+  subjectMatchId  String?
+  /// Extra subjects for comparison reports.
+  subjectIds      String[]     @default([])
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  author   User?           @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  player   Player?         @relation(fields: [subjectPlayerId], references: [id], onDelete: Cascade)
+  team     Team?           @relation(fields: [subjectTeamId], references: [id], onDelete: Cascade)
+  match    Match?          @relation(fields: [subjectMatchId], references: [id], onDelete: Cascade)
+  versions ReportVersion[]
+
+  @@index([type])
+  @@index([subjectPlayerId])
+  @@map("reports")
+}
+
+/// A frozen rendering of a report. The snapshot makes the report reproducible
+/// even after analytics change (§52, §86).
+model ReportVersion {
+  id               String   @id @default(uuid())
+  reportId         String
+  version          Int
+  generatedAt      DateTime @default(now())
+  /// Identifies the data state the report was built from.
+  dataSnapshotId   String
+  analyticsVersion String
+  reportVersion    String
+  /// Complete frozen payload the renderer used.
+  snapshot         Json
+  providerVersions Json     @default("{}")
+  /// Paths relative to REPORT_ROOT.
+  htmlPath         String?
+  pdfPath          String?
+  createdById      String?
+
+  report    Report        @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  createdBy User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  blocks    ReportBlock[]
+
+  @@unique([reportId, version])
+  @@map("report_versions")
+}
+
+model ReportBlock {
+  id              String          @id @default(uuid())
+  reportVersionId String
+  order           Int
+  type            ReportBlockType
+  title           String?
+  content         Json            @default("{}")
+
+  version ReportVersion @relation(fields: [reportVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([reportVersionId, order])
+  @@map("report_blocks")
+}
+
+// ---------------------------------------------------------------------------
+// Analyst tooling & audit (§23, §64)
+// ---------------------------------------------------------------------------
+
+model SavedQuery {
+  id          String    @id @default(uuid())
+  name        String
+  description String?
+  sql         String
+  ownerId     String
+  isShared    Boolean   @default(false)
+  runCount    Int       @default(0)
+  lastRunAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, name])
+  @@map("saved_queries")
+}
+
+model QueryHistory {
   id         String   @id @default(uuid())
-  providerId String
-  playerId   String
-  externalId String
+  ownerId    String
+  sql        String
+  durationMs Int      @default(0)
+  rowCount   Int      @default(0)
+  success    Boolean  @default(true)
+  error      String?
   createdAt  DateTime @default(now())
 
-  provider DataProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  player   Player       @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
-  @@unique([providerId, externalId])
-  @@index([playerId])
-  @@map("external_refs")
+  @@index([ownerId, createdAt])
+  @@map("query_history")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  action     String
+  entityType String?
+  entityId   String?
+  summary    String
+  details    Json     @default("{}")
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
 }

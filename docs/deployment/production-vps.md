@@ -167,7 +167,7 @@ ssh -L 5432:127.0.0.1:5432 scoutiq@vps    # then psql against localhost
 
 ## 6. Backups
 
-Set up backups on day one ([backup.md](backup.md)):
+Set up backups on day one ([backups.md](backups.md)):
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile backup up -d
@@ -187,11 +187,11 @@ PostgreSQL mid-write.
 
 ## 7. Monitoring
 
-`/health/live` and `/health/ready` are enough for any uptime checker; neither
+`/api/health?probe=live` and `/api/health` are enough for any uptime checker; neither
 requires authentication and neither leaks data.
 
 ```bash
-watch -n 30 'curl -s https://scoutiq.example.com/health/ready | jq .status'
+watch -n 30 'curl -s https://scoutiq.example.com/api/health | jq .status'
 ```
 
 Logs go to stdout in JSON and are picked up by the Docker json-file driver

@@ -1,15 +1,15 @@
-# ScoutIQ - base Docker Compose stack.
+# ScoutIQ - base Docker Compose stack (§6).
 #
-# This file is environment-neutral: it works unchanged on a Debian VM under
-# Hyper-V, a bare-metal Ubuntu/Debian server, a VPS or a cloud VPS. Everything
-# host-specific (paths, ports, credentials, URLs) comes from .env.
+# Environment-neutral: the same file runs on a Debian VM under Hyper-V, a
+# physical server, a VPS or a cloud VPS. Everything host-specific (paths,
+# ports, credentials, URLs) comes from .env.
 #
 #   Development:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 #   Production:   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   pgAdmin:      docker compose --profile admin up -d
 #
-# The stack is deliberately split into api / worker / postgres / redis so any
-# service can later be moved to its own machine by pointing DATABASE_URL and
-# REDIS_URL elsewhere and removing the local service.
+# The stack is split so any service can later move to its own machine by
+# pointing DATABASE_URL / REDIS_URL elsewhere and dropping the local service.
 
 name: scoutiq
 
@@ -17,37 +17,65 @@ x-app-env: &app-env
   NODE_ENV: ${NODE_ENV:-production}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   DATABASE_URL: ${DATABASE_URL:-postgresql://scoutiq:scoutiq@postgres:5432/scoutiq?schema=public}
+  DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-}
+  ANALYTICS_DATABASE_URL: ${ANALYTICS_DATABASE_URL:-}
   REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
+  AUTH_SECRET: "${AUTH_SECRET:?AUTH_SECRET is required - generate one with openssl rand -hex 32}"
+  NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
+  AUTH_TOKEN_TTL_SECONDS: ${AUTH_TOKEN_TTL_SECONDS:-86400}
+  CORS_ORIGINS: ${CORS_ORIGINS:-}
   DATA_ROOT: ${DATA_ROOT:-/data}
   RAW_DATA_ROOT: ${RAW_DATA_ROOT:-/data/raw}
+  NORMALIZED_DATA_ROOT: ${NORMALIZED_DATA_ROOT:-/data/normalized}
+  PROCESSED_DATA_ROOT: ${PROCESSED_DATA_ROOT:-/data/processed}
   EXPORT_ROOT: ${EXPORT_ROOT:-/data/exports}
   REPORT_ROOT: ${REPORT_ROOT:-/data/reports}
   BACKUP_ROOT: ${BACKUP_ROOT:-/data/backups}
+  NAS_BACKUP_PATH: ${NAS_BACKUP_PATH:-}
+  NAS_DATASET_PATH: ${NAS_DATASET_PATH:-}
+  NAS_REPORT_PATH: ${NAS_REPORT_PATH:-}
   ARCHIVE_ROOT: ${ARCHIVE_ROOT:-}
   BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
-  AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required - generate with: openssl rand -hex 32}
-  AUTH_TOKEN_TTL_SECONDS: ${AUTH_TOKEN_TTL_SECONDS:-86400}
-  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
-  CORS_ORIGINS: ${CORS_ORIGINS:-*}
   SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
-  IMPORT_CRON: ${IMPORT_CRON:-0 3 * * *}
+  PROVIDER_SYNC_CRON: ${PROVIDER_SYNC_CRON:-0 3 * * *}
   ANALYTICS_CRON: ${ANALYTICS_CRON:-30 3 * * *}
-  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
-  ENABLED_PROVIDERS: ${ENABLED_PROVIDERS:-local-file}
-  HTTP_JSON_PROVIDER_BASE_URL: ${HTTP_JSON_PROVIDER_BASE_URL:-}
-  HTTP_JSON_PROVIDER_API_KEY: ${HTTP_JSON_PROVIDER_API_KEY:-}
-  INGEST_SERVICE_URL: ${INGEST_SERVICE_URL:-}
+  MATERIALIZED_VIEW_CRON: ${MATERIALIZED_VIEW_CRON:-0 4 * * *}
+  BACKUP_CRON: ${BACKUP_CRON:-0 2 * * *}
+  CLEANUP_CRON: ${CLEANUP_CRON:-0 5 * * 0}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+  ENABLE_STATSBOMB_OPEN_DATA: ${ENABLE_STATSBOMB_OPEN_DATA:-true}
+  ENABLE_SKILLCORNER_OPEN_DATA: ${ENABLE_SKILLCORNER_OPEN_DATA:-true}
+  ENABLE_METRICA_OPEN_DATA: ${ENABLE_METRICA_OPEN_DATA:-true}
+  ENABLE_DEMO_PROVIDER: ${ENABLE_DEMO_PROVIDER:-true}
+  STATSBOMB_LOCAL_PATH: ${STATSBOMB_LOCAL_PATH:-}
+  SKILLCORNER_LOCAL_PATH: ${SKILLCORNER_LOCAL_PATH:-}
+  METRICA_LOCAL_PATH: ${METRICA_LOCAL_PATH:-}
+  SPORTMONKS_API_KEY: ${SPORTMONKS_API_KEY:-}
+  API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}
+  THESTATSAPI_KEY: ${THESTATSAPI_KEY:-}
+  ANALYTICS_MIN_MINUTES: ${ANALYTICS_MIN_MINUTES:-450}
+  CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-300}
+  PDF_ENABLED: ${PDF_ENABLED:-true}
+  PDF_BROWSER_EXECUTABLE: ${PDF_BROWSER_EXECUTABLE:-}
+  REPORT_ORGANISATION: ${REPORT_ORGANISATION:-ScoutIQ}
+  SQL_CONSOLE_ENABLED: ${SQL_CONSOLE_ENABLED:-true}
+  SQL_CONSOLE_MAX_ROWS: ${SQL_CONSOLE_MAX_ROWS:-1000}
+  DEMO_MODE: ${DEMO_MODE:-true}
 
 services:
   postgres:
     image: postgres:17-bookworm
+    container_name: scoutiq-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-scoutiq}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-scoutiq}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # The LIVE database always sits on the VM's own disk, never on a network
+      # share (§18, §92). Backups are what go to the NAS.
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scoutiq} -d ${POSTGRES_DB:-scoutiq}"]
       interval: 10s
@@ -57,10 +85,11 @@ services:
 
   redis:
     image: redis:7-alpine
+    container_name: scoutiq-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - redisdata:/data
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -68,13 +97,13 @@ services:
       retries: 10
     networks: [scoutiq]
 
-  # One-shot: applies Prisma migrations, then exits. Every other service waits
-  # for it, so the schema is never migrated by two replicas at once.
+  # One-shot: applies migrations and the SQL views, then exits.
   migrate:
     build:
       context: .
       target: runtime
     image: ${SCOUTIQ_IMAGE:-scoutiq:local}
+    container_name: scoutiq-migrate
     command: ["migrate"]
     environment: *app-env
     depends_on:
@@ -83,18 +112,21 @@ services:
     restart: "no"
     networks: [scoutiq]
 
-  api:
+  web:
     build:
       context: .
       target: runtime
     image: ${SCOUTIQ_IMAGE:-scoutiq:local}
-    command: ["api"]
+    container_name: scoutiq-web
+    command: ["web"]
     restart: unless-stopped
     environment: *app-env
     volumes:
-      # HOST_DATA_ROOT may be a relative path, an absolute path, a mounted
-      # disk, a NAS mount or VPS block storage - the app cannot tell.
+      # HOST_DATA_ROOT may be a relative path, a mounted disk, a NAS mount or
+      # VPS block storage - the application cannot tell.
       - ${HOST_DATA_ROOT:-./data}:/data
+    ports:
+      - "${HTTP_PUBLISH:-127.0.0.1:3000}:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -109,6 +141,7 @@ services:
       context: .
       target: runtime
     image: ${SCOUTIQ_IMAGE:-scoutiq:local}
+    container_name: scoutiq-worker
     command: ["worker"]
     restart: unless-stopped
     environment: *app-env
@@ -121,27 +154,68 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f jobs/worker-main >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks: [scoutiq]
 
-  # Optional Playwright-based ingest service. Only started with:
-  #   docker compose --profile ingest up -d
-  ingest:
+  scheduler:
     build:
-      context: ./services/ingest
-    image: ${SCOUTIQ_INGEST_IMAGE:-scoutiq-ingest:local}
-    profiles: ["ingest"]
+      context: .
+      target: runtime
+    image: ${SCOUTIQ_IMAGE:-scoutiq:local}
+    container_name: scoutiq-scheduler
+    command: ["scheduler"]
     restart: unless-stopped
-    environment:
-      RAW_DATA_ROOT: ${RAW_DATA_ROOT:-/data/raw}
-      INGEST_TARGETS: ${INGEST_TARGETS:-}
-      INGEST_TIMEOUT_MS: ${INGEST_TIMEOUT_MS:-30000}
+    environment: *app-env
     volumes:
       - ${HOST_DATA_ROOT:-./data}:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [scoutiq]
+
+  # Optional database admin UI (§6, §75):  docker compose --profile admin up -d
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: scoutiq-pgadmin
+    profiles: ["admin"]
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@scoutiq.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?PGADMIN_PASSWORD is required for the admin profile}
+      PGADMIN_DISABLE_POSTFIX: "true"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PUBLISH:-127.0.0.1:5050}:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [scoutiq]
+
+  # Optional Python numerical service (§82).
+  #   docker compose --profile analytics up -d
+  analytics-worker:
+    build:
+      context: ./analytics-worker
+    image: ${SCOUTIQ_ANALYTICS_IMAGE:-scoutiq-analytics:local}
+    container_name: scoutiq-analytics
+    profiles: ["analytics"]
+    restart: unless-stopped
+    environment:
+      ANALYTICS_PORT: "8000"
     networks: [scoutiq]
 
 volumes:
-  pgdata:
-  redisdata:
+  postgres_data:
+  redis_data:
+  pgadmin_data:
+  scoutiq_data:
 
 networks:
   scoutiq:

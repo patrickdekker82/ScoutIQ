@@ -1,6 +1,7 @@
 .git
 .github
 node_modules
+.next
 dist
 coverage
 data
@@ -10,6 +11,7 @@ logs
 !.env.example
 **/__pycache__
 .venv
+analytics-worker
 docs
 *.md
 !README.md

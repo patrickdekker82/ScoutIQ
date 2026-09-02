@@ -2,22 +2,30 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
-# Identical images to development - only limits, replicas, logging and port
-# exposure differ. Nothing here is tied to a provider, hostname or IP, so the
-# same two files deploy on the home server and on a VPS.
+# Identical images to development - only limits, replicas, logging and exposure
+# differ. Sized for the target hardware of §3 (4 vCPU / 6 GB), and nothing here
+# names a provider, hostname or IP, so the same two files deploy at home and on
+# a VPS.
 
 services:
   postgres:
-    # Never published in production: reach it through the compose network, or
-    # over an SSH tunnel for maintenance. (The base file publishes no ports;
-    # only docker-compose.dev.yml does.)
     shm_size: 256mb
     command:
       - postgres
       - -c
       - max_connections=${PG_MAX_CONNECTIONS:-100}
       - -c
-      - shared_buffers=${PG_SHARED_BUFFERS:-256MB}
+      - shared_buffers=${PG_SHARED_BUFFERS:-512MB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-16MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-128MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-2GB}
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEMORY_LIMIT:-2G}
     logging: &logging
       driver: json-file
       options:
@@ -33,21 +41,21 @@ services:
       - ${REDIS_MAXMEMORY:-256mb}
       - --maxmemory-policy
       - noeviction
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEMORY_LIMIT:-320M}
     logging: *logging
 
-  api:
-    # Bind to localhost and terminate TLS in a reverse proxy (Caddy, nginx,
-    # Traefik) so the certificate/domain setup stays outside the app.
-    ports:
-      - "${HTTP_PUBLISH:-127.0.0.1:3000}:3000"
+  web:
     environment:
       NODE_ENV: production
     deploy:
       replicas: ${API_REPLICAS:-1}
       resources:
         limits:
-          cpus: "${API_CPU_LIMIT:-1.0}"
-          memory: ${API_MEMORY_LIMIT:-512M}
+          cpus: "${API_CPU_LIMIT:-1.5}"
+          memory: ${API_MEMORY_LIMIT:-1G}
     logging: *logging
 
   worker:
@@ -61,11 +69,21 @@ services:
           memory: ${WORKER_MEMORY_LIMIT:-1G}
     logging: *logging
 
-  # Nightly backup sidecar. Writes to BACKUP_ROOT and, when configured and
-  # reachable, copies to ARCHIVE_ROOT. Enable with:
-  #   docker compose --profile backup up -d
+  scheduler:
+    environment:
+      NODE_ENV: production
+    deploy:
+      # Exactly one: the schedules live in Redis and must be registered once.
+      replicas: 1
+      resources:
+        limits:
+          memory: ${SCHEDULER_MEMORY_LIMIT:-256M}
+    logging: *logging
+
+  # Nightly backup sidecar (§19).  docker compose --profile backup up -d
   backup:
     image: ${SCOUTIQ_IMAGE:-scoutiq:local}
+    container_name: scoutiq-backup
     profiles: ["backup"]
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
@@ -73,11 +91,14 @@ services:
       - |
         while true; do
           sleep "${BACKUP_INTERVAL_SECONDS:-86400}"
-          /app/scripts/docker-entrypoint.sh backup || echo "[scoutiq] backup failed" >&2
+          /app/scripts/docker-entrypoint.sh backup --label scheduled \
+            || echo "[scoutiq] backup failed" >&2
         done
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://scoutiq:scoutiq@postgres:5432/scoutiq?schema=public}
+      DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-}
       BACKUP_ROOT: ${BACKUP_ROOT:-/data/backups}
+      NAS_BACKUP_PATH: ${NAS_BACKUP_PATH:-}
       ARCHIVE_ROOT: ${ARCHIVE_ROOT:-}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
     volumes:

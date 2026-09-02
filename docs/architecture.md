@@ -9,17 +9,17 @@ be split across several - without an application rewrite.
 ```
                        reverse proxy (TLS)
                                │
-                          ScoutIQ API            stateless, N replicas
+                     scoutiq-web (Next.js)        stateless, N replicas
                                │
               ┌────────────────┼────────────────┐
               │                │                │
           PostgreSQL         Redis        storage roots
         (DATABASE_URL)   (REDIS_URL)    (DATA_ROOT & friends)
               │                │                │
-              └──────── ScoutIQ workers ────────┘
-                     import + analytics, N replicas
-                               │
-                    optional ingest service (Playwright)
+              ├──── scoutiq-worker ─────────────┤   imports, analytics,
+              │      N replicas                 │   exports, PDF rendering
+              │                                 │
+              └──── scoutiq-scheduler ──────────┘   exactly one replica
                                │
                     optional archive (NAS / object storage)
 ```
@@ -32,29 +32,32 @@ other than PostgreSQL, Redis and the storage roots.
 
 | Layer | Location | Depends on |
 | --- | --- | --- |
-| Configuration | `src/config/env.ts` | the environment only |
-| Infrastructure | `src/lib/` | configuration |
-| Domain (pure) | `src/domain/` | nothing - no I/O at all |
-| Providers | `src/providers/` | storage / HTTP |
-| Services | `src/services/` | Prisma, storage, providers |
-| Queues & workers | `src/queue/`, `src/workers/` | Redis, services |
-| HTTP | `src/http/` | services |
+| Configuration | `lib/config.ts` | the environment only |
+| Infrastructure | `lib/`, `db/` | configuration |
+| Analytics (pure) | `analytics/` | nothing - no I/O at all |
+| Providers | `providers/` | storage / HTTP |
+| Services | `server/services/` | Prisma, storage, providers |
+| Queues & workers | `jobs/` | Redis, services |
+| Reports | `reports/` | analytics, Playwright |
+| UI and API | `app/`, `components/` | services |
 
-`src/domain/` is deliberately I/O-free: analytics, scoring, report rendering
-and token handling are pure functions. That is what lets analytics run in the
-API process today and in a separate worker fleet tomorrow.
+`analytics/` is deliberately I/O-free: metrics, DNA, roles, similarity, team
+style, club fit, heatmaps, zones and tracking aggregation are pure functions
+over plain objects. That is what lets them be unit-tested exhaustively and run
+wherever there is CPU - in the worker today, on another machine tomorrow.
 
 ## The single configuration rule
 
-`src/config/env.ts` is the only module that reads `process.env` (the seed CLI
-reads its own `SEED_*` inputs). Everything else receives configuration. A test
+`lib/config.ts` is the only module that reads `process.env` (the seed CLI reads
+its own `SEED_*` inputs, and the worker passes the environment to the backup
+child process). Everything else receives configuration. A test
 (`tests/portability.test.ts`) fails the build if that rule is broken, and the
 same test rejects Windows paths, UNC shares, `/volume1/...` NAS paths and
 hard-coded LAN IPs anywhere in the source.
 
 ## Storage
 
-`src/lib/storage.ts` is the only module that touches the filesystem for
+`lib/storage.ts` is the only module that touches the filesystem for
 application data. It resolves every key against a configured root and refuses
 absolute keys or traversal, so a provider or a report name can never escape
 its root - which matters when the root is a network mount.

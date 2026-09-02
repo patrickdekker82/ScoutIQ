@@ -2,9 +2,9 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 #
-# Adds live reload, publishes PostgreSQL and Redis on localhost for tooling,
-# and keeps Node.js/Python/Playwright inside containers - nothing needs to be
-# installed on the host beyond Docker itself.
+# Live reload, and PostgreSQL/Redis published on localhost for psql, DBeaver or
+# Prisma Studio. Node, Python, PostgreSQL and Playwright still stay inside
+# containers - nothing is installed on the host beyond Docker itself (§6).
 
 services:
   postgres:
@@ -23,7 +23,7 @@ services:
       - .:/app
       - node_modules:/app/node_modules
 
-  api:
+  web:
     build:
       target: deps
     command: ["npm", "run", "dev"]
@@ -31,20 +31,33 @@ services:
       NODE_ENV: development
       LOG_LEVEL: ${LOG_LEVEL:-debug}
     user: root
-    ports:
-      - "${HTTP_PUBLISH:-127.0.0.1:3000}:3000"
     volumes:
       - .:/app
       - node_modules:/app/node_modules
+      - next_cache:/app/.next
       - ${HOST_DATA_ROOT:-./data}:/data
 
   worker:
     build:
       target: deps
-    command: ["npm", "run", "dev:worker"]
+    command: ["npm", "run", "worker"]
     environment:
       NODE_ENV: development
       LOG_LEVEL: ${LOG_LEVEL:-debug}
+    user: root
+    healthcheck:
+      disable: true
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+      - ${HOST_DATA_ROOT:-./data}:/data
+
+  scheduler:
+    build:
+      target: deps
+    command: ["npm", "run", "scheduler"]
+    environment:
+      NODE_ENV: development
     user: root
     volumes:
       - .:/app
@@ -53,3 +66,4 @@ services:
 
 volumes:
   node_modules:
+  next_cache:

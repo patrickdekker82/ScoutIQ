@@ -67,7 +67,7 @@ dig +short scoutiq.example.com
 # [HOME]
 cd /srv/scoutiq/app
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-curl -s http://127.0.0.1:3000/health/ready | jq
+curl -s http://127.0.0.1:3000/api/health | jq
 ```
 
 Nothing was restored, moved or rebuilt: the database, volumes and data tree are
@@ -84,7 +84,7 @@ docker compose logs --tail=20 worker    # expect "schedules registered"
 
 ### 5. Confirm
 
-- [ ] `/health/ready` returns 200
+- [ ] `/api/health` returns 200
 - [ ] Login works
 - [ ] Player counts match what they were before the migration
 - [ ] The scheduler logged its registration

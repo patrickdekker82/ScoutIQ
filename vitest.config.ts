@@ -1,11 +1,15 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  resolve: {
+    // Same `@/` alias the application and tsconfig use.
+    alias: { '@': fileURLToPath(new URL('.', import.meta.url)) },
+  },
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
-    // Tests must never depend on machine-specific state: no shared globals,
-    // no reliance on a database being present on the host.
+    setupFiles: ['tests/setup.ts'],
     restoreMocks: true,
   },
 });
