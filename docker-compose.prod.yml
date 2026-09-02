@@ -1,0 +1,89 @@
+# Production overrides.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Identical images to development - only limits, replicas, logging and port
+# exposure differ. Nothing here is tied to a provider, hostname or IP, so the
+# same two files deploy on the home server and on a VPS.
+
+services:
+  postgres:
+    # Never published in production: reach it through the compose network, or
+    # over an SSH tunnel for maintenance. (The base file publishes no ports;
+    # only docker-compose.dev.yml does.)
+    shm_size: 256mb
+    command:
+      - postgres
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-100}
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-256MB}
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  redis:
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - noeviction
+    logging: *logging
+
+  api:
+    # Bind to localhost and terminate TLS in a reverse proxy (Caddy, nginx,
+    # Traefik) so the certificate/domain setup stays outside the app.
+    ports:
+      - "${HTTP_PUBLISH:-127.0.0.1:3000}:3000"
+    environment:
+      NODE_ENV: production
+    deploy:
+      replicas: ${API_REPLICAS:-1}
+      resources:
+        limits:
+          cpus: "${API_CPU_LIMIT:-1.0}"
+          memory: ${API_MEMORY_LIMIT:-512M}
+    logging: *logging
+
+  worker:
+    environment:
+      NODE_ENV: production
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+      resources:
+        limits:
+          cpus: "${WORKER_CPU_LIMIT:-2.0}"
+          memory: ${WORKER_MEMORY_LIMIT:-1G}
+    logging: *logging
+
+  # Nightly backup sidecar. Writes to BACKUP_ROOT and, when configured and
+  # reachable, copies to ARCHIVE_ROOT. Enable with:
+  #   docker compose --profile backup up -d
+  backup:
+    image: ${SCOUTIQ_IMAGE:-scoutiq:local}
+    profiles: ["backup"]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          sleep "${BACKUP_INTERVAL_SECONDS:-86400}"
+          /app/scripts/docker-entrypoint.sh backup || echo "[scoutiq] backup failed" >&2
+        done
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://scoutiq:scoutiq@postgres:5432/scoutiq?schema=public}
+      BACKUP_ROOT: ${BACKUP_ROOT:-/data/backups}
+      ARCHIVE_ROOT: ${ARCHIVE_ROOT:-}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ${HOST_DATA_ROOT:-./data}:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [scoutiq]
+    logging: *logging

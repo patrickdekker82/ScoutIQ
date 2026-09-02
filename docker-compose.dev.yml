@@ -1,0 +1,55 @@
+# Development overrides.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Adds live reload, publishes PostgreSQL and Redis on localhost for tooling,
+# and keeps Node.js/Python/Playwright inside containers - nothing needs to be
+# installed on the host beyond Docker itself.
+
+services:
+  postgres:
+    ports:
+      - "${POSTGRES_PUBLISH:-127.0.0.1:5432}:5432"
+
+  redis:
+    ports:
+      - "${REDIS_PUBLISH:-127.0.0.1:6379}:6379"
+
+  migrate:
+    build:
+      target: deps
+    command: ["npx", "prisma", "migrate", "deploy"]
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+
+  api:
+    build:
+      target: deps
+    command: ["npm", "run", "dev"]
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    user: root
+    ports:
+      - "${HTTP_PUBLISH:-127.0.0.1:3000}:3000"
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+      - ${HOST_DATA_ROOT:-./data}:/data
+
+  worker:
+    build:
+      target: deps
+    command: ["npm", "run", "dev:worker"]
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    user: root
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+      - ${HOST_DATA_ROOT:-./data}:/data
+
+volumes:
+  node_modules:

@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment / secrets  -- NEVER commit these (see docs/deployment/docker.md)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+!**/testdata/**/*.crt
+secrets/
+
+# Application data (must live outside source control; see DATA_ROOT).
+# The directory itself is kept so the default HOST_DATA_ROOT=./data works.
+/data/*
+!/data/.gitkeep
+
+# Logs & runtime
+dump.rdb
+logs/
+*.log
+npm-debug.log*
+coverage/
+.vitest/
+
+# Python (ingest service)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

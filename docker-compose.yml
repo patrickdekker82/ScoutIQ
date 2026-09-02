@@ -1,0 +1,148 @@
+# ScoutIQ - base Docker Compose stack.
+#
+# This file is environment-neutral: it works unchanged on a Debian VM under
+# Hyper-V, a bare-metal Ubuntu/Debian server, a VPS or a cloud VPS. Everything
+# host-specific (paths, ports, credentials, URLs) comes from .env.
+#
+#   Development:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   Production:   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# The stack is deliberately split into api / worker / postgres / redis so any
+# service can later be moved to its own machine by pointing DATABASE_URL and
+# REDIS_URL elsewhere and removing the local service.
+
+name: scoutiq
+
+x-app-env: &app-env
+  NODE_ENV: ${NODE_ENV:-production}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_URL: ${DATABASE_URL:-postgresql://scoutiq:scoutiq@postgres:5432/scoutiq?schema=public}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+  DATA_ROOT: ${DATA_ROOT:-/data}
+  RAW_DATA_ROOT: ${RAW_DATA_ROOT:-/data/raw}
+  EXPORT_ROOT: ${EXPORT_ROOT:-/data/exports}
+  REPORT_ROOT: ${REPORT_ROOT:-/data/reports}
+  BACKUP_ROOT: ${BACKUP_ROOT:-/data/backups}
+  ARCHIVE_ROOT: ${ARCHIVE_ROOT:-}
+  BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+  AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required - generate with: openssl rand -hex 32}
+  AUTH_TOKEN_TTL_SECONDS: ${AUTH_TOKEN_TTL_SECONDS:-86400}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
+  CORS_ORIGINS: ${CORS_ORIGINS:-*}
+  SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+  IMPORT_CRON: ${IMPORT_CRON:-0 3 * * *}
+  ANALYTICS_CRON: ${ANALYTICS_CRON:-30 3 * * *}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+  ENABLED_PROVIDERS: ${ENABLED_PROVIDERS:-local-file}
+  HTTP_JSON_PROVIDER_BASE_URL: ${HTTP_JSON_PROVIDER_BASE_URL:-}
+  HTTP_JSON_PROVIDER_API_KEY: ${HTTP_JSON_PROVIDER_API_KEY:-}
+  INGEST_SERVICE_URL: ${INGEST_SERVICE_URL:-}
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-scoutiq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-scoutiq}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scoutiq} -d ${POSTGRES_DB:-scoutiq}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [scoutiq]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [scoutiq]
+
+  # One-shot: applies Prisma migrations, then exits. Every other service waits
+  # for it, so the schema is never migrated by two replicas at once.
+  migrate:
+    build:
+      context: .
+      target: runtime
+    image: ${SCOUTIQ_IMAGE:-scoutiq:local}
+    command: ["migrate"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [scoutiq]
+
+  api:
+    build:
+      context: .
+      target: runtime
+    image: ${SCOUTIQ_IMAGE:-scoutiq:local}
+    command: ["api"]
+    restart: unless-stopped
+    environment: *app-env
+    volumes:
+      # HOST_DATA_ROOT may be a relative path, an absolute path, a mounted
+      # disk, a NAS mount or VPS block storage - the app cannot tell.
+      - ${HOST_DATA_ROOT:-./data}:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [scoutiq]
+
+  worker:
+    build:
+      context: .
+      target: runtime
+    image: ${SCOUTIQ_IMAGE:-scoutiq:local}
+    command: ["worker"]
+    restart: unless-stopped
+    environment: *app-env
+    volumes:
+      - ${HOST_DATA_ROOT:-./data}:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [scoutiq]
+
+  # Optional Playwright-based ingest service. Only started with:
+  #   docker compose --profile ingest up -d
+  ingest:
+    build:
+      context: ./services/ingest
+    image: ${SCOUTIQ_INGEST_IMAGE:-scoutiq-ingest:local}
+    profiles: ["ingest"]
+    restart: unless-stopped
+    environment:
+      RAW_DATA_ROOT: ${RAW_DATA_ROOT:-/data/raw}
+      INGEST_TARGETS: ${INGEST_TARGETS:-}
+      INGEST_TIMEOUT_MS: ${INGEST_TIMEOUT_MS:-30000}
+    volumes:
+      - ${HOST_DATA_ROOT:-./data}:/data
+    networks: [scoutiq]
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  scoutiq:
+    driver: bridge

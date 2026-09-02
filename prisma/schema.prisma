@@ -1,0 +1,250 @@
+// ScoutIQ database schema.
+//
+// The schema is reproducible on any PostgreSQL instance through the migrations
+// in prisma/migrations. A fresh database becomes a complete ScoutIQ database
+// with `npm run db:migrate` - no manual SQL, no environment-specific steps.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Resolved from the environment at runtime; never hard-coded.
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  SCOUT
+  VIEWER
+}
+
+enum ImportStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum ReportStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  displayName  String
+  passwordHash String
+  role         UserRole @default(SCOUT)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  reports ScoutingReport[]
+
+  @@map("users")
+}
+
+model Competition {
+  id        String   @id @default(uuid())
+  name      String
+  country   String
+  tier      Int      @default(1)
+  season    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  teams   Team[]
+  matches Match[]
+
+  @@unique([name, season])
+  @@map("competitions")
+}
+
+model Team {
+  id            String   @id @default(uuid())
+  name          String
+  shortName     String?
+  country       String
+  competitionId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  competition Competition? @relation(fields: [competitionId], references: [id], onDelete: SetNull)
+  players     Player[]
+  homeMatches Match[]      @relation("HomeTeam")
+  awayMatches Match[]      @relation("AwayTeam")
+
+  @@unique([name, country])
+  @@index([competitionId])
+  @@map("teams")
+}
+
+model Player {
+  id          String    @id @default(uuid())
+  firstName   String
+  lastName    String
+  birthDate   DateTime?
+  nationality String?
+  position    String
+  footPref    String?
+  heightCm    Int?
+  teamId      String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  team           Team?             @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  matchStats     PlayerMatchStat[]
+  metrics        PlayerMetric[]
+  reports        ScoutingReport[]
+  externalRefs   ExternalRef[]
+
+  @@index([teamId])
+  @@index([position])
+  @@map("players")
+}
+
+model Match {
+  id            String   @id @default(uuid())
+  competitionId String
+  homeTeamId    String
+  awayTeamId    String
+  kickoffAt     DateTime
+  homeGoals     Int?
+  awayGoals     Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  competition Competition       @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  homeTeam    Team              @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeam    Team              @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  playerStats PlayerMatchStat[]
+
+  @@index([competitionId, kickoffAt])
+  @@map("matches")
+}
+
+model PlayerMatchStat {
+  id                String   @id @default(uuid())
+  playerId          String
+  matchId           String
+  minutesPlayed     Int      @default(0)
+  goals             Int      @default(0)
+  assists           Int      @default(0)
+  shots             Int      @default(0)
+  xg                Float    @default(0)
+  xa                Float    @default(0)
+  passes            Int      @default(0)
+  passesCompleted   Int      @default(0)
+  progressivePasses Int      @default(0)
+  duelsWon          Int      @default(0)
+  duelsTotal        Int      @default(0)
+  createdAt         DateTime @default(now())
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  match  Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, matchId])
+  @@index([matchId])
+  @@map("player_match_stats")
+}
+
+/// Aggregated, per-90 analytics output produced by the analytics worker.
+model PlayerMetric {
+  id            String   @id @default(uuid())
+  playerId      String
+  season        String
+  minutesPlayed Int
+  matches       Int
+  goalsPer90    Float
+  assistsPer90  Float
+  xgPer90       Float
+  xaPer90       Float
+  passAccuracy  Float
+  progPassPer90 Float
+  duelWinRate   Float
+  /// 0-100 composite score, comparable within position + season.
+  scoutScore    Float
+  computedAt    DateTime @default(now())
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, season])
+  @@index([season])
+  @@map("player_metrics")
+}
+
+model ScoutingReport {
+  id        String       @id @default(uuid())
+  playerId  String
+  authorId  String?
+  title     String
+  summary   String
+  rating    Int
+  status    ReportStatus @default(DRAFT)
+  /// Path of the rendered report relative to REPORT_ROOT - never absolute, so
+  /// the report root can move between machines without a data migration.
+  filePath  String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  author User?  @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([playerId])
+  @@map("scouting_reports")
+}
+
+/// A configured data provider (file drop, HTTP API, ingest service, ...).
+model DataProvider {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  name      String
+  enabled   Boolean  @default(true)
+  /// Non-secret provider settings. Secrets stay in the environment.
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  imports      ImportRun[]
+  externalRefs ExternalRef[]
+
+  @@map("data_providers")
+}
+
+model ImportRun {
+  id            String       @id @default(uuid())
+  providerId    String
+  status        ImportStatus @default(PENDING)
+  startedAt     DateTime     @default(now())
+  finishedAt    DateTime?
+  recordsRead   Int          @default(0)
+  recordsWritten Int         @default(0)
+  /// Path of the archived raw payload relative to RAW_DATA_ROOT.
+  rawPath       String?
+  error         String?
+
+  provider DataProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, startedAt])
+  @@map("import_runs")
+}
+
+/// Maps a provider's own identifier to a ScoutIQ player, so re-imports are
+/// idempotent and providers stay replaceable.
+model ExternalRef {
+  id         String   @id @default(uuid())
+  providerId String
+  playerId   String
+  externalId String
+  createdAt  DateTime @default(now())
+
+  provider DataProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  player   Player       @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, externalId])
+  @@index([playerId])
+  @@map("external_refs")
+}
