@@ -281,6 +281,38 @@ describe('demo provider (§73)', () => {
     expect(first).toEqual(second);
   });
 
+  it('names a team-mate on every completed pass, so §38 has edges to draw', async () => {
+    process.env = baseEnv(sandbox);
+    resetConfig();
+
+    const provider = new DemoProvider(6);
+    const [players, events] = await Promise.all([
+      provider.getPlayers(),
+      provider.getEvents('demo-match-0'),
+    ]);
+
+    const teamOf = new Map(players.map((player) => [player.externalId, player.teamExternalId]));
+    const passes = events.filter((event) => event.type === 'PASS');
+    const detail = (event: (typeof passes)[number]) =>
+      (event.detail as { pass?: { completed: boolean; recipientExternalId: string | null } }).pass;
+
+    const completed = passes.filter((event) => detail(event)?.completed === true);
+    expect(completed.length).toBeGreaterThan(100);
+    expect(completed.every((event) => detail(event)?.recipientExternalId !== null)).toBe(true);
+
+    // An incomplete pass reached nobody, so it must not name a recipient.
+    const incomplete = passes.filter((event) => detail(event)?.completed === false);
+    expect(incomplete.length).toBeGreaterThan(0);
+    expect(incomplete.every((event) => detail(event)?.recipientExternalId === null)).toBe(true);
+
+    for (const event of completed) {
+      const recipient = detail(event)?.recipientExternalId as string;
+      // Never the passer, and never an opponent.
+      expect(recipient).not.toBe(event.playerExternalId);
+      expect(teamOf.get(recipient)).toBe(event.teamExternalId);
+    }
+  });
+
   it('labels its content as fabricated', () => {
     const licence = new DemoProvider().licence;
     expect(licence.notes).toMatch(/synthetic/i);

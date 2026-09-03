@@ -117,6 +117,7 @@ export function PassingNetworkPanel({
         <button
           type="button"
           onClick={() => setPossessionOnly((value) => !value)}
+          title="Open-play passes in this team's own possession - excludes corners, free kicks, throw-ins, goal kicks and kick-offs"
           className={buttonClass(possessionOnly)}
         >
           Possession only
@@ -151,8 +152,11 @@ export function PassingNetworkPanel({
           <p className="mt-2 text-[11px] text-ink-400">
             {data.totalPasses} passes, {data.completedPasses} completed,{' '}
             {data.linkedPasses} with a named recipient. Links below {data.minPasses} passes are
-            hidden. A node is a centroid over the whole selected window, not a position in a
-            formation - a substitute&apos;s node rests on far fewer passes than a starter&apos;s.
+            hidden.{' '}
+            {possessionOnly &&
+              'Set pieces and passes during the opponent\u2019s possession are excluded. '}
+            A node is a centroid over the whole selected window, not a position in a formation - a
+            substitute&apos;s node rests on far fewer passes than a starter&apos;s.
           </p>
 
           <div className="mt-3 overflow-x-auto">

@@ -59,8 +59,22 @@ interface Candidate {
   isDemo: boolean;
 }
 
+/**
+ * Football keeps its own spelling: xG and npxG are not "Xg" and "Npxg", and a
+ * scout reading "Xg /90" would rightly wonder what tool wrote it.
+ */
+const METRIC_LABELS: Record<string, string> = {
+  xgP90: 'xG /90',
+  npxgP90: 'npxG /90',
+  xaP90: 'xA /90',
+  xgPerShot: 'xG per shot',
+};
+
 /** `progressivePassesP90` -> `Progressive passes /90`. */
 export function metricLabel(key: string): string {
+  const known = METRIC_LABELS[key];
+  if (known) return known;
+
   const spaced = key
     .replace(/P90$/, ' /90')
     .replace(/([A-Z])/g, ' $1')

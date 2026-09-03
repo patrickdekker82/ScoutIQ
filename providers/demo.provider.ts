@@ -325,16 +325,26 @@ export class DemoProvider extends BaseProvider {
 
       const roll = random();
       const teamExternalId = `demo-team-${actor.teamIndex}`;
+      const opponentIndex = actor.teamIndex === fixture.home ? fixture.away : fixture.home;
+      // A defensive action happens while the OTHER team has the ball. Making
+      // the possession team always the acting team would leave the possession
+      // filters of §38 unable to tell anything apart.
+      const inPossession = roll >= 0.2 || group === 'FW';
       const common = {
         matchExternalId,
         teamExternalId,
         playerExternalId: actor.externalId,
-        possessionTeamExternalId: teamExternalId,
+        possessionTeamExternalId: inPossession
+          ? teamExternalId
+          : `demo-team-${opponentIndex}`,
         minute,
         second: Math.floor(random() * 60),
         period,
         timestampMs: minute * 60_000,
         underPressure: random() < 0.22,
+        // Most of the ball is in open play; the rest restarts from a dead ball.
+        // Without this the open-play filter of §38 has nothing to separate.
+        playPattern: inPossession ? DEMO_PLAY_PATTERNS[Math.floor(random() * DEMO_PLAY_PATTERNS.length)] ?? 'Regular Play' : 'Regular Play',
       };
 
       // Shots: forwards and attacking midfielders, from the final third.
@@ -449,6 +459,10 @@ export class DemoProvider extends BaseProvider {
       const endX = clamp(forward ? x + random() * 30 : x - random() * 15, 1, PITCH_LENGTH_M - 1);
       const endY = clamp(y + (random() - 0.5) * 30, 1, PITCH_WIDTH_M - 1);
       const completed = random() < 0.62 + actor.quality * 0.3;
+      // A completed pass reached someone. Without a recipient the passing
+      // network of §38 has nodes but no edges, so the demo league would show
+      // an empty picture where real data shows a team shape.
+      const recipient = completed ? pickRecipient(lineup, actor, endX, random) : null;
       const keyPass = completed && endX > PITCH_LENGTH_M * 0.8 && random() < 0.06;
 
       events.push({
@@ -462,7 +476,7 @@ export class DemoProvider extends BaseProvider {
         outcome: completed ? null : 'Incomplete',
         detail: {
           pass: {
-            recipientExternalId: null,
+            recipientExternalId: recipient,
             lengthM: Math.round(Math.hypot(endX - x, endY - y) * 10) / 10,
             angleRad: Math.atan2(endY - y, endX - x),
             height: random() < 0.75 ? 'GROUND' : 'HIGH',
@@ -483,8 +497,57 @@ export class DemoProvider extends BaseProvider {
   }
 }
 
+/**
+ * Play patterns the demo league uses, weighted towards open play by repetition.
+ * Named as StatsBomb names them so the demo exercises the same code paths as
+ * real data does.
+ */
+const DEMO_PLAY_PATTERNS = [
+  'Regular Play',
+  'Regular Play',
+  'Regular Play',
+  'Regular Play',
+  'Regular Play',
+  'Regular Play',
+  'From Counter',
+  'From Throw In',
+  'From Free Kick',
+  'From Corner',
+  'From Goal Kick',
+] as const;
+
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
+
+/** Where a position typically operates along the pitch, in metres. */
+const zoneX = (position: string): number => {
+  const group = positionGroupOf(position);
+  const base = group === 'GK' ? 0.06 : group === 'DF' ? 0.3 : group === 'MF' ? 0.52 : 0.74;
+  return base * PITCH_LENGTH_M;
+};
+
+/**
+ * Choose who received a completed pass.
+ *
+ * The nearest team-mate by typical zone, chosen from the closest few so the
+ * network has some spread rather than one deterministic edge per pair. This is
+ * plausible shape, not a simulation - as with everything else the demo provider
+ * produces, and the reason its output is labelled DEMO DATA throughout.
+ */
+function pickRecipient(
+  lineup: { externalId: string; position: string; teamIndex: number }[],
+  actor: { externalId: string; teamIndex: number },
+  endX: number,
+  random: () => number,
+): string | null {
+  const candidates = lineup
+    .filter((mate) => mate.teamIndex === actor.teamIndex && mate.externalId !== actor.externalId)
+    .map((mate) => ({ mate, distance: Math.abs(zoneX(mate.position) - endX) }))
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 3);
+
+  return candidates[Math.floor(random() * candidates.length)]?.mate.externalId ?? null;
+}
 
 function positionGroupOf(position: string): 'GK' | 'DF' | 'MF' | 'FW' {
   if (position === 'GK') return 'GK';

@@ -1,6 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { describe, expect, it } from 'vitest';
-import { NetworkService } from '@/server/services/network.service';
+import { DEAD_BALL_PATTERNS, NetworkService } from '@/server/services/network.service';
 
 /**
  * Passing network aggregation (§38).
@@ -23,10 +23,17 @@ interface StubEvent {
 const MATCH = '11111111-1111-1111-1111-111111111111';
 const TEAM = '22222222-2222-2222-2222-222222222222';
 
+let lastWhere: Record<string, unknown> = {};
+
 const stub = (events: StubEvent[], names: Record<string, string>) =>
   ({
     team: { findUnique: async () => ({ name: 'Stub FC' }) },
-    event: { findMany: async () => events },
+    event: {
+      findMany: async ({ where }: { where: Record<string, unknown> }) => {
+        lastWhere = where;
+        return events;
+      },
+    },
     player: {
       findMany: async () =>
         Object.entries(names).map(([id, fullName]) => ({ id, fullName, knownAs: null })),
@@ -163,6 +170,31 @@ describe('passingNetwork', () => {
     expect(bo?.y).toBe(30);
     expect(bo?.passes).toBe(0);
     expect(bo?.received).toBe(2);
+  });
+
+  it('asks the database for open-play passes in its own possession (§38)', async () => {
+    const service = new NetworkService(stub([], {}));
+
+    await service.passingNetwork({ matchId: MATCH, teamId: TEAM, possessionOnly: true });
+    expect(lastWhere.possessionTeamId).toBe(TEAM);
+    expect(lastWhere.OR).toEqual([
+      { playPattern: null },
+      { playPattern: { notIn: [...DEAD_BALL_PATTERNS] } },
+    ]);
+
+    await service.passingNetwork({ matchId: MATCH, teamId: TEAM });
+    expect(lastWhere).not.toHaveProperty('possessionTeamId');
+    expect(lastWhere).not.toHaveProperty('OR');
+  });
+
+  it('filters by period only when a half is asked for', async () => {
+    const service = new NetworkService(stub([], {}));
+
+    await service.passingNetwork({ matchId: MATCH, teamId: TEAM, period: 'second' });
+    expect(lastWhere.period).toEqual({ period: 2 });
+
+    await service.passingNetwork({ matchId: MATCH, teamId: TEAM, period: 'full' });
+    expect(lastWhere).not.toHaveProperty('period');
   });
 
   it('never lets a self-pass become an edge', async () => {

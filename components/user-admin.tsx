@@ -25,6 +25,9 @@ export interface AdminUserRow {
   counts: { reports: number; notes: number; shortlists: number };
 }
 
+const LAST_ADMIN_HINT =
+  'This is the only active admin. Promote another account to admin first.';
+
 const ROLE_HINT: Record<Role, string> = {
   ADMIN: 'Everything, including users, providers, imports and backups',
   ANALYST: 'Analytics runs, SQL console, exports, reports and shortlists',
@@ -143,10 +146,13 @@ function CreateUser({ onDone }: { onDone: () => void }) {
 function UserRow({
   user,
   selfId,
+  isLastAdmin,
   onChanged,
 }: {
   user: AdminUserRow;
   selfId: string;
+  /** The only active admin left: the server refuses to demote or disable them. */
+  isLastAdmin: boolean;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -191,9 +197,10 @@ function UserRow({
       <td className="px-3 py-2 align-top">
         <select
           value={user.role}
-          disabled={busy}
+          disabled={busy || isLastAdmin}
+          title={isLastAdmin ? LAST_ADMIN_HINT : undefined}
           onChange={(event) => void patch({ role: event.target.value }, 'Role updated.')}
-          className="rounded-md border border-ink-300 px-2 py-1 text-xs outline-none focus:border-brand-500"
+          className="rounded-md border border-ink-300 px-2 py-1 text-xs outline-none focus:border-brand-500 disabled:bg-ink-50 disabled:text-ink-400"
         >
           {ROLES.map((value) => (
             <option key={value} value={value}>
@@ -231,7 +238,8 @@ function UserRow({
 
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || isLastAdmin}
+            title={isLastAdmin ? LAST_ADMIN_HINT : undefined}
             onClick={() =>
               void patch(
                 { active: !user.active },
@@ -283,6 +291,10 @@ export function UserAdmin({ users, selfId }: { users: AdminUserRow[]; selfId: st
   const router = useRouter();
   const refresh = () => router.refresh();
 
+  // The server enforces this; the UI only avoids offering a button that is
+  // certain to be refused.
+  const activeAdmins = users.filter((user) => user.active && user.role === 'ADMIN');
+
   return (
     <div className="space-y-4">
       <CreateUser onDone={refresh} />
@@ -313,7 +325,13 @@ export function UserAdmin({ users, selfId }: { users: AdminUserRow[]; selfId: st
           </thead>
           <tbody className="divide-y divide-ink-100">
             {users.map((user) => (
-              <UserRow key={user.id} user={user} selfId={selfId} onChanged={refresh} />
+              <UserRow
+                key={user.id}
+                user={user}
+                selfId={selfId}
+                isLastAdmin={activeAdmins.length === 1 && activeAdmins[0]?.id === user.id}
+                onChanged={refresh}
+              />
             ))}
           </tbody>
         </table>

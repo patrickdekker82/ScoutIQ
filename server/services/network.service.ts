@@ -13,11 +13,33 @@ import { prisma as defaultPrisma } from '@/db/client';
 
 export type NetworkPeriod = 'full' | 'first' | 'second';
 
+/**
+ * Play patterns that are not settled possession.
+ *
+ * Named as the providers write them - StatsBomb's vocabulary, which the
+ * importer stores verbatim rather than mapping to an enum, because a pattern a
+ * provider invents tomorrow should not become an import error today.
+ */
+export const DEAD_BALL_PATTERNS = [
+  'From Corner',
+  'From Free Kick',
+  'From Throw In',
+  'From Goal Kick',
+  'From Kick Off',
+  'From Keeper',
+  'From Set Piece',
+] as const;
+
 export interface PassingNetworkQuery {
   matchId: string;
   teamId: string;
   period?: NetworkPeriod;
-  /** Restrict to passes made while the team was the possession team. */
+  /**
+   * "Possession only" (§38): open-play passes belonging to this team's own
+   * possession. Excludes set-piece patterns (corners, free kicks, throw-ins,
+   * goal kicks, kick-offs) and anything played during the opponent's
+   * possession, which is where the shape of a settled attack gets lost.
+   */
   possessionOnly?: boolean;
   /** Drop edges below this many passes so the picture stays readable. */
   minPasses?: number;
@@ -77,7 +99,12 @@ export class NetworkService {
         teamId: query.teamId,
         type: 'PASS',
         ...(periodNumber !== null ? { period: { period: periodNumber } } : {}),
-        ...(possessionOnly ? { possessionTeamId: query.teamId } : {}),
+        ...(possessionOnly
+          ? {
+              possessionTeamId: query.teamId,
+              OR: [{ playPattern: null }, { playPattern: { notIn: [...DEAD_BALL_PATTERNS] } }],
+            }
+          : {}),
       },
       select: {
         playerId: true,

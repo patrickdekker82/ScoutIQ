@@ -154,6 +154,57 @@ export interface NetworkEdge {
   passes: number;
 }
 
+const surname = (name: string): string => name.split(' ').slice(-1)[0] ?? name;
+
+/**
+ * Keep node labels off each other.
+ *
+ * Two team-mates who operate in the same area sit almost on top of one another,
+ * and overlapping names make the picture unreadable. Labels default to just
+ * above their node and are nudged further out until they clear the ones already
+ * placed - so a crowded midfield stacks legibly instead of turning to mush.
+ */
+function placeLabels(nodes: NetworkNode[]): { node: NetworkNode; labelY: number }[] {
+  const MIN_X_GAP = 9;
+  const MIN_Y_GAP = 2.4;
+  const STEP = 2.4;
+
+  const maxNode = Math.max(1, ...nodes.map((node) => node.passes));
+  const radiusOf = (node: NetworkNode): number => 1.4 + (node.passes / maxNode) * 2.2;
+
+  const placed: { node: NetworkNode; labelY: number }[] = [];
+
+  // A label must clear the names already placed AND every node circle but its
+  // own - a name drawn over a neighbour's circle is as unreadable as one drawn
+  // over another name.
+  const collides = (node: NetworkNode, labelY: number): boolean =>
+    placed.some(
+      (other) =>
+        Math.abs(other.node.x - node.x) < MIN_X_GAP &&
+        Math.abs(other.labelY - labelY) < MIN_Y_GAP,
+    ) ||
+    nodes.some(
+      (other) =>
+        other.playerId !== node.playerId &&
+        Math.hypot(other.x - node.x, other.y - labelY) < radiusOf(other) + 1.2,
+    );
+
+  // Busiest first: the most important names get the position closest to home.
+  for (const node of [...nodes].sort((a, b) => b.passes - a.passes)) {
+    let labelY = node.y - 3;
+
+    for (let attempt = 1; attempt <= 10 && collides(node, labelY); attempt += 1) {
+      // Alternate above and below so a cluster spreads either way.
+      const offset = Math.ceil(attempt / 2) * STEP;
+      labelY = attempt % 2 === 1 ? node.y - 3 - offset : node.y + 3 + offset;
+    }
+
+    placed.push({ node, labelY });
+  }
+
+  return placed;
+}
+
 export function PassingNetwork({
   nodes,
   edges,
@@ -166,6 +217,7 @@ export function PassingNetwork({
   const byId = new Map(nodes.map((node) => [node.playerId, node]));
   const maxPasses = Math.max(1, ...edges.map((edge) => edge.passes));
   const maxNode = Math.max(1, ...nodes.map((node) => node.passes));
+  const placed = placeLabels(nodes);
 
   return (
     <svg
@@ -192,7 +244,7 @@ export function PassingNetwork({
           />
         );
       })}
-      {nodes.map((node) => (
+      {placed.map(({ node, labelY }) => (
         <g key={node.playerId}>
           <circle
             cx={node.x}
@@ -203,8 +255,17 @@ export function PassingNetwork({
           >
             <title>{`${node.name} - ${node.passes} passes`}</title>
           </circle>
-          <text x={node.x} y={node.y - 3} fontSize={2.2} textAnchor="middle" fill="#334155">
-            {node.name.split(' ').slice(-1)[0]}
+          <text
+            x={node.x}
+            y={labelY}
+            fontSize={1.9}
+            textAnchor="middle"
+            fill="#334155"
+            stroke="#f8fafc"
+            strokeWidth={0.55}
+            paintOrder="stroke"
+          >
+            {surname(node.name)}
           </text>
         </g>
       ))}
