@@ -92,6 +92,15 @@ export interface Shot {
   onTarget: boolean;
   minute?: number;
   playerName?: string | null;
+  /**
+   * Which side took the shot, where a map shows both.
+   *
+   * Canonical coordinates already have EVERY team attacking left-to-right
+   * (§33), so the two teams overlay on the same goal and are told apart by
+   * outline rather than by which end they sit at.
+   */
+  side?: 'home' | 'away';
+  teamName?: string | null;
 }
 
 export function ShotMap({ shots, className = '' }: { shots: Shot[]; className?: string }) {
@@ -114,11 +123,12 @@ export function ShotMap({ shots, className = '' }: { shots: Shot[]; className?: 
             r={Math.max(0.7, Math.sqrt(Math.max(0.01, shot.xg)) * 4)}
             fill={shot.isGoal ? '#16a34a' : shot.onTarget ? '#f59e0b' : '#94a3b8'}
             fillOpacity={0.75}
-            stroke="#1e293b"
-            strokeWidth={0.15}
+            stroke={shot.side === 'away' ? '#1b5ea0' : '#1e293b'}
+            strokeWidth={shot.side === 'away' ? 0.5 : 0.15}
+            strokeDasharray={shot.side === 'away' ? '1 0.6' : undefined}
           >
             <title>
-              {`${shot.playerName ?? 'Shot'}${shot.minute !== undefined ? ` ${shot.minute}'` : ''} - xG ${shot.xg.toFixed(2)}${shot.isGoal ? ' (goal)' : ''}`}
+              {`${shot.playerName ?? 'Shot'}${shot.teamName ? ` (${shot.teamName})` : ''}${shot.minute !== undefined ? ` ${shot.minute}'` : ''} - xG ${shot.xg.toFixed(2)}${shot.isGoal ? ' (goal)' : ''}`}
             </title>
           </circle>
         ))}
@@ -134,6 +144,12 @@ export function ShotMap({ shots, className = '' }: { shots: Shot[]; className?: 
           <span className="inline-block h-2 w-2 rounded-full bg-ink-400" /> Off target
         </span>
         <span>Marker size is xG</span>
+        {shots.some((shot) => shot.side === 'away') && (
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full border border-dashed border-brand-600" />
+            Away side
+          </span>
+        )}
       </p>
     </div>
   );

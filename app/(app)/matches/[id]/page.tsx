@@ -147,9 +147,14 @@ export default async function MatchPage({ params }: { params: Promise<{ id: stri
             <ShotMap
               shots={shots.map((shot) => ({
                 id: shot.id,
-                // Away shots are mirrored so both teams attack the same goal.
-                x: shot.teamId === match.homeTeamId ? (shot.x as number) : 105 - (shot.x as number),
-                y: shot.teamId === match.homeTeamId ? (shot.y as number) : 68 - (shot.y as number),
+                // No mirroring: canonical coordinates already have both teams
+                // attacking left-to-right (§33). Flipping the away side would
+                // put its shots in its own defensive third - outside this map.
+                x: shot.x as number,
+                y: shot.y as number,
+                side: shot.teamId === match.homeTeamId ? ('home' as const) : ('away' as const),
+                teamName:
+                  shot.teamId === match.homeTeamId ? match.homeTeam.name : match.awayTeam.name,
                 xg: shot.shot?.xg ?? 0,
                 isGoal: shot.shot?.isGoal ?? false,
                 onTarget: shot.shot?.onTarget ?? false,

@@ -717,9 +717,11 @@ export class ReportService {
       shots: shots
         .filter((shot) => shot.x !== null && shot.y !== null)
         .map((shot) => ({
-          // Away shots are mirrored so both teams attack the same goal.
-          x: shot.teamId === match.homeTeamId ? (shot.x as number) : 105 - (shot.x as number),
-          y: shot.teamId === match.homeTeamId ? (shot.y as number) : 68 - (shot.y as number),
+          // Canonical coordinates already have both teams attacking
+          // left-to-right (§33); mirroring the away side would move its shots
+          // into its own half.
+          x: shot.x as number,
+          y: shot.y as number,
           xg: shot.shot?.xg ?? 0,
           isGoal: shot.shot?.isGoal ?? false,
           onTarget: shot.shot?.onTarget ?? false,
