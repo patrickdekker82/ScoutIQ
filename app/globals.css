@@ -54,3 +54,12 @@ body {
 ::selection {
   background: var(--color-brand-100);
 }
+
+/*
+ * SQL console highlighting (§23). Colours sit on the dark editor ground and
+ * are chosen for contrast rather than decoration.
+ */
+.sql-keyword { color: #7dd3fc; font-weight: 600; }
+.sql-string { color: #86efac; }
+.sql-number { color: #fcd34d; }
+.sql-comment { color: #94a3b8; font-style: italic; }

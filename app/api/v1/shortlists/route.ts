@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/db/client';
 import { requirePermission } from '@/server/auth';
 import { audit } from '@/server/audit';
-import { json, parseBody, route } from '@/server/http';
+import { apiError, json, parseBody, route } from '@/server/http';
 
 export const GET = route(async (request: Request) => {
   const user = await requirePermission('data:read', request);
@@ -98,4 +98,46 @@ export const PUT = route(async (request: Request) => {
   });
 
   return json(entry);
+});
+
+const removeSchema = z.object({
+  shortlistId: z.string().uuid(),
+  playerId: z.string().uuid(),
+});
+
+/** Take a player off a shortlist (§47). */
+export const DELETE = route(async (request: Request) => {
+  const user = await requirePermission('shortlists:write', request);
+
+  const url = new URL(request.url);
+  const parsed = removeSchema.safeParse({
+    shortlistId: url.searchParams.get('shortlistId') ?? '',
+    playerId: url.searchParams.get('playerId') ?? '',
+  });
+  if (!parsed.success) {
+    return apiError(400, 'bad_request', { message: 'Name both the shortlist and the player.' });
+  }
+
+  const entry = await prisma.shortlistPlayer.findUnique({
+    where: {
+      shortlistId_playerId: {
+        shortlistId: parsed.data.shortlistId,
+        playerId: parsed.data.playerId,
+      },
+    },
+  });
+  if (!entry) return apiError(404, 'not_found', { message: 'That player is not on this list.' });
+
+  await prisma.shortlistPlayer.delete({ where: { id: entry.id } });
+
+  await audit({
+    actorId: user.id,
+    action: 'shortlist.update',
+    entityType: 'shortlist',
+    entityId: parsed.data.shortlistId,
+    summary: 'Removed a player from a shortlist',
+    details: { playerId: parsed.data.playerId },
+  });
+
+  return json({ deleted: true });
 });

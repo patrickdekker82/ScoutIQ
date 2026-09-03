@@ -16,6 +16,7 @@ const DATASETS = [
   'roles',
   'similarity',
   'club_fit',
+  'tracking_aggregates',
   'shortlists',
 ];
 

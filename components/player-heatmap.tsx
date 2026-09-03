@@ -33,6 +33,10 @@ export function PlayerHeatmap({ playerId }: { playerId: string }) {
   const [algorithm, setAlgorithm] = useState('GAUSSIAN_KDE');
   const [half, setHalf] = useState('');
   const [resolution, setResolution] = useState('24');
+  const [possession, setPossession] = useState('');
+  const [minuteFrom, setMinuteFrom] = useState('');
+  const [minuteTo, setMinuteTo] = useState('');
+  const [opacity, setOpacity] = useState(1);
   const [data, setData] = useState<{
     cells: HeatmapCell[];
     cols: number;
@@ -53,6 +57,9 @@ export function PlayerHeatmap({ playerId }: { playerId: string }) {
         rows: String(Math.round(Number(resolution) * 0.66)),
       });
       if (half) params.set('half', half);
+      if (possession) params.set('possession', possession);
+      if (minuteFrom) params.set('minuteFrom', minuteFrom);
+      if (minuteTo) params.set('minuteTo', minuteTo);
 
       const response = await fetch(
         `/api/v1/players/${playerId}/heatmap?${params.toString()}`,
@@ -67,7 +74,7 @@ export function PlayerHeatmap({ playerId }: { playerId: string }) {
 
     void load();
     return () => controller.abort();
-  }, [playerId, type, algorithm, half, resolution]);
+  }, [playerId, type, algorithm, half, resolution, possession, minuteFrom, minuteTo]);
 
   const select = 'rounded-md border border-ink-300 px-2 py-1 text-xs outline-none focus:border-brand-500';
 
@@ -101,6 +108,16 @@ export function PlayerHeatmap({ playerId }: { playerId: string }) {
             <option value="2">2nd half</option>
           </select>
           <select
+            value={possession}
+            onChange={(event) => setPossession(event.target.value)}
+            title="Whether the player's own team had the ball when the action happened"
+            className={select}
+          >
+            <option value="">In and out of possession</option>
+            <option value="IN">In possession</option>
+            <option value="OUT">Out of possession</option>
+          </select>
+          <select
             value={resolution}
             onChange={(event) => setResolution(event.target.value)}
             className={select}
@@ -112,10 +129,50 @@ export function PlayerHeatmap({ playerId }: { playerId: string }) {
         </div>
       }
     >
+      <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-ink-500">
+        <label className="flex items-center gap-1.5">
+          Minutes
+          <input
+            type="number"
+            min={0}
+            max={130}
+            value={minuteFrom}
+            onChange={(event) => setMinuteFrom(event.target.value)}
+            placeholder="0"
+            className="w-14 rounded-md border border-ink-300 px-1.5 py-1 outline-none focus:border-brand-500"
+          />
+          to
+          <input
+            type="number"
+            min={0}
+            max={130}
+            value={minuteTo}
+            onChange={(event) => setMinuteTo(event.target.value)}
+            placeholder="90"
+            className="w-14 rounded-md border border-ink-300 px-1.5 py-1 outline-none focus:border-brand-500"
+          />
+        </label>
+
+        <label className="flex items-center gap-1.5">
+          Opacity
+          <input
+            type="range"
+            min={0.2}
+            max={1}
+            step={0.05}
+            value={opacity}
+            onChange={(event) => setOpacity(Number(event.target.value))}
+            className="w-24 accent-brand-600"
+          />
+        </label>
+      </div>
+
       {loading && !data ? (
         <div className="h-56 animate-pulse rounded-md bg-ink-100" />
       ) : data && data.sampleSize > 0 ? (
-        <HeatmapPitch cells={data.cells} cols={data.cols} rows={data.rows} />
+        <div style={{ opacity }}>
+          <HeatmapPitch cells={data.cells} cols={data.cols} rows={data.rows} />
+        </div>
       ) : (
         <Empty>No events of this type for this player.</Empty>
       )}

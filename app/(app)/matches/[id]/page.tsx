@@ -6,12 +6,15 @@ import { Card, DemoBadge, Empty, Stat, Table, Td, Th } from '@/components/ui';
 import { ShotMap } from '@/components/pitch';
 import { EventBrowser } from '@/components/event-browser';
 import { PassingNetworkPanel } from '@/components/passing-network-panel';
+import { GenerateReportButton } from '@/components/generate-report';
+import { can, getSessionUser } from '@/server/auth';
 
 export const dynamic = 'force-dynamic';
 
 /** Match page (§40) with the event browser of §89. */
 export default async function MatchPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const user = await getSessionUser();
 
   const match = await prisma.match.findUnique({
     where: { id },
@@ -88,6 +91,11 @@ export default async function MatchPage({ params }: { params: Promise<{ id: stri
             </Link>
           </h1>
           {match.isDemo && <DemoBadge />}
+          {user && can(user.role, 'reports:create') && (
+            <div className="ml-auto">
+              <GenerateReportButton matchId={match.id} label="Match report" />
+            </div>
+          )}
         </div>
       </header>
 

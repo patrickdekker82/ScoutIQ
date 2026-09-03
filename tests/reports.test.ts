@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { buildPlayerReportBlocks, humanise, type PlayerReportData } from '@/reports/blocks';
+import {
+  buildClubReportBlocks,
+  buildComparisonReportBlocks,
+  buildMatchReportBlocks,
+  buildPlayerReportBlocks,
+  humanise,
+  type ClubReportData,
+  type ComparisonReportData,
+  type MatchReportData,
+  type PlayerReportData,
+} from '@/reports/blocks';
 import { renderReportHtml } from '@/reports/render';
 import { buildSnapshotMeta, snapshotId } from '@/reports/snapshot';
 import { ANALYTICS_VERSION, REPORT_VERSION } from '@/analytics/version';
@@ -207,5 +217,198 @@ describe('humanise', () => {
   it('turns metric keys into readable labels', () => {
     expect(humanise('progressivePassesP90')).toBe('Progressive Passes per 90');
     expect(humanise('pass_accuracy')).toBe('Pass accuracy');
+  });
+});
+
+/**
+ * The other three report types (§50, §51).
+ *
+ * Each must produce blocks the renderer understands - the generic JSON dump in
+ * the renderer's default branch is a bug escape hatch, not an output format.
+ */
+
+const clubData = (overrides: Partial<ClubReportData> = {}): ClubReportData => ({
+  team: { id: 't1', name: 'Ajax', country: 'Netherlands', isDemo: false },
+  season: { id: 's1', name: '2025/26', competition: 'Eredivisie' },
+  metrics: { possession: 60.2, xgP90: 2.1 },
+  style: { possession: 88, highPress: 74, lowBlock: 12 },
+  squad: [
+    { playerName: 'Ann Archer', position: 'CM', minutes: 1800, goalsP90: 0.2, xgP90: 0.3, xaP90: 0.4 },
+  ],
+  matches: [
+    { date: '2026-01-10', opponent: 'PSV', homeAway: 'H', score: '2-1', xg: 1.8, possession: 58 },
+  ],
+  quality: { matches: 20, confidence: 'HIGH', summary: 'Computed from 20 matches.' },
+  ...overrides,
+});
+
+describe('buildClubReportBlocks', () => {
+  it('produces the spine of a club report', () => {
+    const blocks = buildClubReportBlocks(clubData(), { title: 'Club report - Ajax' });
+    const types = blocks.map((block) => block.type);
+
+    expect(types).toContain('TITLE');
+    expect(types).toContain('EXECUTIVE_SUMMARY');
+    expect(types).toContain('KEY_METRICS');
+    expect(types).toContain('RADAR');
+    expect(types).toContain('STRENGTHS');
+  });
+
+  it('splits style strengths and weaknesses at the 70th and 30th percentile', () => {
+    const blocks = buildClubReportBlocks(clubData(), { title: 'x' });
+    const strengths = blocks.find((block) => block.type === 'STRENGTHS')?.content.items as string[];
+    const risks = blocks.find((block) => block.type === 'RISKS')?.content.items as string[];
+
+    expect(strengths.join(' ')).toContain('Possession');
+    expect(strengths.join(' ')).toContain('High press');
+    expect(risks.join(' ')).toContain('Low block');
+  });
+
+  it('renders without falling through to the JSON dump', () => {
+    const html = renderReportHtml(
+      {
+        title: 'Club report',
+        subject: 'Ajax',
+        isDemo: false,
+        blocks: buildClubReportBlocks(clubData(), { title: 'Club report' }),
+        quality: { summary: 'ok' },
+      },
+      {
+        organisation: 'ScoutIQ',
+        baseUrl: 'http://localhost:3000',
+        meta: buildSnapshotMeta({ a: 1 }, []),
+      },
+    );
+
+    expect(html).toContain('table class="grid"');
+    expect(html).not.toContain('<pre>{');
+  });
+
+  it('says so plainly when a club has no computed season', () => {
+    const blocks = buildClubReportBlocks(
+      clubData({
+        season: null,
+        metrics: null,
+        style: null,
+        quality: { matches: 0, confidence: 'INSUFFICIENT', summary: 'No season metrics.' },
+      }),
+      { title: 'x' },
+    );
+
+    expect(blocks.some((block) => block.type === 'RADAR')).toBe(false);
+    const summary = blocks.find((block) => block.type === 'EXECUTIVE_SUMMARY')?.content.text;
+    expect(String(summary)).toContain('No season metrics');
+  });
+});
+
+const matchData = (overrides: Partial<MatchReportData> = {}): MatchReportData => ({
+  match: {
+    id: 'm1',
+    kickoff: '2026-01-10T14:00:00.000Z',
+    competition: 'Eredivisie',
+    season: '2025/26',
+    homeTeam: 'Ajax',
+    awayTeam: 'PSV',
+    score: '2 - 1',
+    isDemo: false,
+  },
+  teamMetrics: [{ key: 'possession', home: 58, away: 42 }],
+  shots: [{ x: 90, y: 34, xg: 0.4, isGoal: true, onTarget: true }],
+  lineups: [{ team: 'Ajax', playerName: 'Ann Archer', position: 'CM', minutes: 90 }],
+  network: {
+    team: 'Ajax',
+    nodes: [{ name: 'Ann Archer', passes: 40, received: 35 }],
+    edges: [{ from: 'Ann Archer', to: 'Bo Berg', passes: 12 }],
+  },
+  quality: { events: 1400, confidence: 'HIGH', summary: 'Derived from 1400 events.' },
+  ...overrides,
+});
+
+describe('buildMatchReportBlocks', () => {
+  it('puts the two teams side by side', () => {
+    const blocks = buildMatchReportBlocks(matchData(), { title: 'Match report' });
+    const table = blocks.find((block) => block.type === 'KEY_METRICS')?.content.table as {
+      columns: { label: string }[];
+    };
+
+    expect(table.columns.map((column) => column.label)).toEqual(['Metric', 'Ajax', 'PSV']);
+  });
+
+  it('leaves out the shot map and network when there is nothing to draw', () => {
+    const blocks = buildMatchReportBlocks(matchData({ shots: [], network: null }), {
+      title: 'x',
+    });
+    const types = blocks.map((block) => block.type);
+
+    expect(types).not.toContain('SHOT_MAP');
+    expect(types).not.toContain('PASSING_NETWORK');
+  });
+});
+
+const comparisonData = (shared = true): ComparisonReportData => ({
+  players: [
+    {
+      id: 'p1',
+      fullName: 'Ann Archer',
+      position: 'CM',
+      positionGroup: 'MF',
+      age: 24,
+      teamName: 'Ajax',
+      season: 'Eredivisie 2025/26',
+      minutes: 1800,
+      confidence: 'HIGH',
+      metrics: { goalsP90: 0.3 },
+      percentiles: { goalsP90: 82 },
+      dna: { Passing: 70 },
+      topRole: 'Deep-Lying Playmaker',
+    },
+    {
+      id: 'p2',
+      fullName: 'Bo Berg',
+      position: 'CM',
+      positionGroup: 'MF',
+      age: 27,
+      teamName: 'PSV',
+      season: 'Eredivisie 2025/26',
+      minutes: 1500,
+      confidence: 'HIGH',
+      metrics: { goalsP90: 0.1 },
+      percentiles: { goalsP90: 41 },
+      dna: { Passing: 55 },
+      topRole: 'Box-to-Box',
+    },
+  ],
+  sharedPopulation: shared,
+  metricKeys: ['goalsP90'],
+  quality: { summary: 'Both above 1500 minutes.' },
+});
+
+describe('buildComparisonReportBlocks', () => {
+  it('gives each player their own column', () => {
+    const blocks = buildComparisonReportBlocks(comparisonData(), { title: 'Comparison' });
+    const table = blocks.find((block) => block.type === 'KEY_METRICS')?.content.table as {
+      columns: { key: string }[];
+    };
+
+    expect(table.columns.map((column) => column.key)).toEqual(['metric', 'p1', 'p2']);
+  });
+
+  it('warns in the percentile note when the populations differ', () => {
+    const shared = buildComparisonReportBlocks(comparisonData(true), { title: 'x' });
+    const split = buildComparisonReportBlocks(comparisonData(false), { title: 'x' });
+
+    const noteOf = (blocks: ReturnType<typeof buildComparisonReportBlocks>): string =>
+      String(blocks.find((block) => block.type === 'PERCENTILES')?.content.note);
+
+    expect(noteOf(shared)).toContain('one competition season');
+    expect(noteOf(split)).toContain('not directly comparable');
+  });
+
+  it('draws a radar per player rather than pretending to overlay them', () => {
+    const blocks = buildComparisonReportBlocks(comparisonData(), { title: 'x' });
+    const radars = blocks.filter((block) => block.type === 'RADAR');
+
+    expect(radars).toHaveLength(2);
+    expect(radars[0]?.title).toContain('Ann Archer');
   });
 });

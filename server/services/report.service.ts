@@ -5,7 +5,17 @@ import { prisma as defaultPrisma } from '@/db/client';
 import { getConfig } from '@/lib/config';
 import { logger } from '@/lib/logger';
 import { getStorage, type Storage } from '@/lib/storage';
-import { buildPlayerReportBlocks, type PlayerReportData } from '@/reports/blocks';
+import {
+  buildClubReportBlocks,
+  buildComparisonReportBlocks,
+  buildMatchReportBlocks,
+  buildPlayerReportBlocks,
+  type Block,
+  type ClubReportData,
+  type ComparisonReportData,
+  type MatchReportData,
+  type PlayerReportData,
+} from '@/reports/blocks';
 import { htmlToPdf, PdfUnavailableError } from '@/reports/pdf';
 import { renderReportHtml } from '@/reports/render';
 import { buildSnapshotMeta, collectProviders } from '@/reports/snapshot';
@@ -26,6 +36,8 @@ import { HeatmapService } from '@/server/services/heatmap.service';
 
 export interface GenerateReportOptions {
   playerId?: string;
+  /** Two to five players, for a comparison report (§43, §51). */
+  playerIds?: string[];
   teamId?: string;
   matchId?: string;
   type?: ReportType;
@@ -280,26 +292,62 @@ export class ReportService {
   async generatePlayerReport(options: GenerateReportOptions): Promise<GeneratedReport> {
     if (!options.playerId) throw new Error('playerId is required for a player report');
 
-    const config = getConfig();
     const data = await this.collectPlayerData(options.playerId, options.competitionSeasonId);
     const title = options.title ?? `Scouting report - ${data.player.fullName}`;
 
-    const blocks = buildPlayerReportBlocks(data, {
+    return this.persist({
+      options,
+      type: options.type ?? ReportType.PLAYER,
       title,
-      ...(options.summary ? { summary: options.summary } : {}),
-      ...(options.recommendation ? { recommendation: options.recommendation } : {}),
+      subject: data.player.fullName,
+      ...(data.season ? { subtitle: `${data.season.competition} ${data.season.name}` } : {}),
+      isDemo: data.player.isDemo,
+      subjectIds: { subjectPlayerId: options.playerId },
+      data,
+      quality: data.quality,
+      blocks: buildPlayerReportBlocks(data, {
+        title,
+        ...(options.summary ? { summary: options.summary } : {}),
+        ...(options.recommendation ? { recommendation: options.recommendation } : {}),
+      }),
     });
+  }
+
+  /**
+   * Freeze, store and render a report (§52, §86).
+   *
+   * Every report type shares this: the snapshot is written before anything is
+   * rendered, so a failed PDF never costs the report.
+   */
+  private async persist(input: {
+    options: GenerateReportOptions;
+    type: ReportType;
+    title: string;
+    subject: string;
+    subtitle?: string;
+    isDemo: boolean;
+    subjectIds: {
+      subjectPlayerId?: string;
+      subjectTeamId?: string;
+      subjectMatchId?: string;
+    };
+    data: unknown;
+    quality: { summary: string; confidence?: string };
+    blocks: Block[];
+  }): Promise<GeneratedReport> {
+    const { options, title, blocks, data } = input;
+    const config = getConfig();
 
     const providers = await collectProviders(this.prisma);
     const meta = buildSnapshotMeta({ data, blocks }, providers);
 
     const report = await this.prisma.report.create({
       data: {
-        type: options.type ?? ReportType.PLAYER,
+        type: input.type,
         title,
         status: options.status ?? 'DRAFT',
         authorId: options.authorId ?? null,
-        subjectPlayerId: options.playerId,
+        ...input.subjectIds,
       },
     });
 
@@ -330,11 +378,11 @@ export class ReportService {
     const html = renderReportHtml(
       {
         title,
-        subject: data.player.fullName,
-        subtitle: data.season ? `${data.season.competition} ${data.season.name}` : undefined,
-        isDemo: data.player.isDemo,
+        subject: input.subject,
+        subtitle: input.subtitle,
+        isDemo: input.isDemo,
         blocks,
-        quality: data.quality,
+        quality: input.quality,
       },
       {
         organisation: config.reports.organisation,
@@ -387,6 +435,375 @@ export class ReportService {
       pdfPath: pdfKey,
       dataSnapshotId: meta.dataSnapshotId,
       ...(pdfError ? { pdfError } : {}),
+    };
+  }
+
+  async generateClubReport(options: GenerateReportOptions): Promise<GeneratedReport> {
+    if (!options.teamId) throw new Error('teamId is required for a club report');
+
+    const data = await this.collectClubData(options.teamId, options.competitionSeasonId);
+    const title = options.title ?? `Club report - ${data.team.name}`;
+
+    return this.persist({
+      options,
+      type: ReportType.CLUB,
+      title,
+      subject: data.team.name,
+      ...(data.season ? { subtitle: `${data.season.competition} ${data.season.name}` } : {}),
+      isDemo: data.team.isDemo,
+      subjectIds: { subjectTeamId: options.teamId },
+      data,
+      quality: data.quality,
+      blocks: buildClubReportBlocks(data, {
+        title,
+        ...(options.summary ? { summary: options.summary } : {}),
+        ...(options.recommendation ? { recommendation: options.recommendation } : {}),
+      }),
+    });
+  }
+
+  async generateMatchReport(options: GenerateReportOptions): Promise<GeneratedReport> {
+    if (!options.matchId) throw new Error('matchId is required for a match report');
+
+    const data = await this.collectMatchData(options.matchId);
+    const title =
+      options.title ?? `Match report - ${data.match.homeTeam} v ${data.match.awayTeam}`;
+
+    return this.persist({
+      options,
+      type: ReportType.MATCH,
+      title,
+      subject: `${data.match.homeTeam} ${data.match.score} ${data.match.awayTeam}`,
+      subtitle: `${data.match.competition} ${data.match.season}`,
+      isDemo: data.match.isDemo,
+      subjectIds: { subjectMatchId: options.matchId },
+      data,
+      quality: data.quality,
+      blocks: buildMatchReportBlocks(data, {
+        title,
+        ...(options.summary ? { summary: options.summary } : {}),
+      }),
+    });
+  }
+
+  async generateComparisonReport(options: GenerateReportOptions): Promise<GeneratedReport> {
+    const ids = options.playerIds ?? [];
+    if (ids.length < 2) throw new Error('A comparison report needs at least two players');
+
+    const data = await this.collectComparisonData(ids);
+    const names = data.players.map((player) => player.fullName);
+    const title = options.title ?? `Comparison - ${names.join(' v ')}`;
+
+    return this.persist({
+      options,
+      type: ReportType.PLAYER_COMPARISON,
+      title,
+      subject: names.join(' · '),
+      ...(data.players[0]?.season ? { subtitle: data.players[0].season } : {}),
+      isDemo: false,
+      subjectIds: { subjectPlayerId: ids[0] as string },
+      data,
+      quality: data.quality,
+      blocks: buildComparisonReportBlocks(data, {
+        title,
+        ...(options.summary ? { summary: options.summary } : {}),
+        ...(options.recommendation ? { recommendation: options.recommendation } : {}),
+      }),
+    });
+  }
+
+  private async collectClubData(
+    teamId: string,
+    competitionSeasonId?: string,
+  ): Promise<ClubReportData> {
+    const team = await this.prisma.team.findUniqueOrThrow({
+      where: { id: teamId },
+      include: { country: { select: { name: true } } },
+    });
+
+    const seasonMetric = await this.prisma.teamSeasonMetric.findFirst({
+      where: {
+        teamId,
+        analyticsVersion: ANALYTICS_VERSION,
+        ...(competitionSeasonId ? { competitionSeasonId } : {}),
+      },
+      include: { season: { include: { competition: { select: { name: true } } } } },
+      orderBy: { matches: 'desc' },
+    });
+
+    const [style, squad, matches] = await Promise.all([
+      seasonMetric
+        ? this.prisma.teamStyleProfile.findFirst({
+            where: {
+              teamId,
+              competitionSeasonId: seasonMetric.competitionSeasonId,
+              analyticsVersion: ANALYTICS_VERSION,
+            },
+          })
+        : Promise.resolve(null),
+      seasonMetric
+        ? this.prisma.playerSeasonMetric.findMany({
+            where: {
+              teamId,
+              competitionSeasonId: seasonMetric.competitionSeasonId,
+              analyticsVersion: ANALYTICS_VERSION,
+            },
+            include: { player: { select: { fullName: true, primaryPosition: true } } },
+            orderBy: { minutes: 'desc' },
+            take: 30,
+          })
+        : Promise.resolve([]),
+      this.prisma.teamMatchMetric.findMany({
+        where: {
+          teamId,
+          analyticsVersion: ANALYTICS_VERSION,
+          ...(seasonMetric
+            ? { match: { competitionSeasonId: seasonMetric.competitionSeasonId } }
+            : {}),
+        },
+        include: {
+          match: {
+            select: {
+              kickoffAt: true,
+              homeScore: true,
+              awayScore: true,
+              homeTeamId: true,
+              homeTeam: { select: { name: true } },
+              awayTeam: { select: { name: true } },
+            },
+          },
+        },
+        orderBy: { match: { kickoffAt: 'asc' } },
+      }),
+    ]);
+
+    const metrics: Record<string, number> = {};
+    if (seasonMetric) {
+      const row = seasonMetric as unknown as Record<string, unknown>;
+      for (const key of [
+        'possession',
+        'xgP90',
+        'xgAgainstP90',
+        'shotsP90',
+        'progressionP90',
+        'finalThirdEntriesP90',
+        'boxEntriesP90',
+        'fieldTilt',
+        'passAccuracy',
+        'pressuresP90',
+        'ppda',
+        'directness',
+      ]) {
+        const value = row[key];
+        if (typeof value === 'number') metrics[key] = value;
+      }
+    }
+
+    return {
+      team: {
+        id: team.id,
+        name: team.name,
+        country: team.country?.name ?? null,
+        isDemo: team.isDemo,
+      },
+      season: seasonMetric
+        ? {
+            id: seasonMetric.competitionSeasonId,
+            name: seasonMetric.season.seasonName,
+            competition: seasonMetric.season.competition.name,
+          }
+        : null,
+      metrics: Object.keys(metrics).length > 0 ? metrics : null,
+      style: (style?.style as Record<string, number> | undefined) ?? null,
+      squad: squad.map((entry) => ({
+        playerName: entry.player.fullName,
+        position: entry.player.primaryPosition,
+        minutes: entry.minutes,
+        goalsP90: entry.goalsP90,
+        xgP90: entry.xgP90,
+        xaP90: entry.xaP90,
+      })),
+      matches: matches.map((entry) => {
+        const home = entry.match.homeTeamId === teamId;
+        return {
+          date: entry.match.kickoffAt.toISOString().slice(0, 10),
+          opponent: home ? entry.match.awayTeam.name : entry.match.homeTeam.name,
+          homeAway: home ? 'H' : 'A',
+          score: `${entry.match.homeScore ?? '-'}-${entry.match.awayScore ?? '-'}`,
+          xg: entry.xg,
+          possession: entry.possession,
+        };
+      }),
+      quality: {
+        matches: seasonMetric?.matches ?? 0,
+        confidence: seasonMetric?.confidence ?? 'INSUFFICIENT',
+        summary: seasonMetric
+          ? `Computed from ${seasonMetric.matches} matches; confidence ${seasonMetric.confidence.toLowerCase()}.`
+          : 'No season metrics have been computed for this club yet.',
+      },
+    };
+  }
+
+  private async collectMatchData(matchId: string): Promise<MatchReportData> {
+    const match = await this.prisma.match.findUniqueOrThrow({
+      where: { id: matchId },
+      include: {
+        homeTeam: { select: { id: true, name: true } },
+        awayTeam: { select: { id: true, name: true } },
+        season: { include: { competition: { select: { name: true } } } },
+      },
+    });
+
+    const [teamMetrics, shots, lineups, eventCount] = await Promise.all([
+      this.prisma.teamMatchMetric.findMany({
+        where: { matchId, analyticsVersion: ANALYTICS_VERSION },
+      }),
+      this.prisma.event.findMany({
+        where: { matchId, type: 'SHOT', x: { not: null }, y: { not: null } },
+        select: { x: true, y: true, teamId: true, shot: true },
+        take: 200,
+      }),
+      this.prisma.playerMatch.findMany({
+        where: { matchId },
+        include: {
+          player: { select: { fullName: true } },
+          team: { select: { name: true } },
+        },
+        orderBy: [{ teamId: 'asc' }, { minutesPlayed: 'desc' }],
+      }),
+      this.prisma.event.count({ where: { matchId } }),
+    ]);
+
+    const home = teamMetrics.find((metric) => metric.teamId === match.homeTeamId);
+    const away = teamMetrics.find((metric) => metric.teamId === match.awayTeamId);
+
+    const compare = (key: string): { key: string; home: number; away: number } => ({
+      key,
+      home: ((home as unknown as Record<string, number> | undefined)?.[key] ?? 0),
+      away: ((away as unknown as Record<string, number> | undefined)?.[key] ?? 0),
+    });
+
+    const network = await this.networkFor(matchId, match.homeTeamId, match.homeTeam.name);
+
+    return {
+      match: {
+        id: match.id,
+        kickoff: match.kickoffAt.toISOString(),
+        competition: match.season.competition.name,
+        season: match.season.seasonName,
+        homeTeam: match.homeTeam.name,
+        awayTeam: match.awayTeam.name,
+        score: `${match.homeScore ?? '-'} - ${match.awayScore ?? '-'}`,
+        isDemo: match.isDemo,
+      },
+      teamMetrics:
+        home && away
+          ? [
+              'possession',
+              'xg',
+              'shots',
+              'shotsOnTarget',
+              'passes',
+              'passAccuracy',
+              'progressivePasses',
+              'finalThirdEntries',
+              'boxEntries',
+              'fieldTilt',
+              'pressures',
+              'recoveries',
+              'ppda',
+            ].map(compare)
+          : [],
+      shots: shots
+        .filter((shot) => shot.x !== null && shot.y !== null)
+        .map((shot) => ({
+          // Away shots are mirrored so both teams attack the same goal.
+          x: shot.teamId === match.homeTeamId ? (shot.x as number) : 105 - (shot.x as number),
+          y: shot.teamId === match.homeTeamId ? (shot.y as number) : 68 - (shot.y as number),
+          xg: shot.shot?.xg ?? 0,
+          isGoal: shot.shot?.isGoal ?? false,
+          onTarget: shot.shot?.onTarget ?? false,
+        })),
+      lineups: lineups.map((entry) => ({
+        team: entry.team.name,
+        playerName: entry.player.fullName,
+        position: entry.position,
+        minutes: entry.minutesPlayed,
+      })),
+      network,
+      quality: {
+        events: eventCount,
+        confidence: home && away ? 'HIGH' : 'INSUFFICIENT',
+        summary:
+          home && away
+            ? `Derived from ${eventCount} recorded events.`
+            : `Only ${eventCount} events are recorded and no team metrics have been computed, so the comparison below is empty.`,
+      },
+    };
+  }
+
+  /** Passing network for the report, reusing the same aggregation as the app. */
+  private async networkFor(
+    matchId: string,
+    teamId: string,
+    teamName: string,
+  ): Promise<MatchReportData['network']> {
+    const { NetworkService } = await import('@/server/services/network.service');
+    const result = await new NetworkService(this.prisma).passingNetwork({ matchId, teamId });
+    if (result.nodes.length === 0) return null;
+
+    const names = new Map(result.nodes.map((node) => [node.playerId, node.name]));
+    return {
+      team: teamName,
+      nodes: result.nodes.map((node) => ({
+        name: node.name,
+        passes: node.passes,
+        received: node.received,
+      })),
+      edges: result.edges.map((edge) => ({
+        from: names.get(edge.from) ?? '?',
+        to: names.get(edge.to) ?? '?',
+        passes: edge.passes,
+      })),
+    };
+  }
+
+  private async collectComparisonData(ids: string[]): Promise<ComparisonReportData> {
+    const { ComparisonService } = await import('@/server/services/comparison.service');
+    const comparison = await new ComparisonService(this.prisma).comparePlayers(ids);
+
+    return {
+      players: comparison.players.map((player) => ({
+        id: player.id,
+        fullName: player.fullName,
+        position: player.primaryPosition ?? '-',
+        positionGroup: player.positionGroup ?? '-',
+        age: player.age,
+        teamName: player.club,
+        season: player.season
+          ? `${player.season.competitionName} ${player.season.seasonName}`
+          : null,
+        minutes: player.season?.minutes ?? 0,
+        confidence: player.season?.confidence ?? 'INSUFFICIENT',
+        metrics: player.metrics,
+        percentiles: Object.fromEntries(
+          Object.entries(player.percentiles).map(([key, entry]) => [key, entry.percentile]),
+        ),
+        dna: player.dna,
+        topRole: player.roles[0]?.name ?? null,
+      })),
+      sharedPopulation: comparison.sharedPopulation,
+      metricKeys: comparison.metricKeys,
+      quality: {
+        summary: comparison.players
+          .map(
+            (player) =>
+              `${player.fullName}: ${player.season?.minutes ?? 0} minutes, confidence ${(
+                player.season?.confidence ?? 'insufficient'
+              ).toLowerCase()}.`,
+          )
+          .join(' '),
+      },
     };
   }
 

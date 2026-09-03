@@ -163,10 +163,13 @@ export function startWorkers(): Worker[] {
   const reportWorker = new Worker<ReportJobData>(
     QUEUE_REPORT,
     async (job) => {
-      if (!job.data.playerId) throw new Error('Only player reports are supported');
-
-      const result = await reportService.generatePlayerReport({
-        playerId: job.data.playerId,
+      // The subject decides the report type (§50); the API has already
+      // guaranteed that exactly one of them is named.
+      const options = {
+        ...(job.data.playerId ? { playerId: job.data.playerId } : {}),
+        ...(job.data.playerIds ? { playerIds: job.data.playerIds } : {}),
+        ...(job.data.teamId ? { teamId: job.data.teamId } : {}),
+        ...(job.data.matchId ? { matchId: job.data.matchId } : {}),
         ...(job.data.competitionSeasonId
           ? { competitionSeasonId: job.data.competitionSeasonId }
           : {}),
@@ -175,7 +178,15 @@ export function startWorkers(): Worker[] {
         ...(job.data.recommendation ? { recommendation: job.data.recommendation } : {}),
         ...(job.data.authorId ? { authorId: job.data.authorId } : {}),
         includePdf: job.data.includePdf ?? true,
-      });
+      };
+
+      const result = job.data.playerIds
+        ? await reportService.generateComparisonReport(options)
+        : job.data.teamId
+          ? await reportService.generateClubReport(options)
+          : job.data.matchId
+            ? await reportService.generateMatchReport(options)
+            : await reportService.generatePlayerReport(options);
 
       await audit({
         actorId: job.data.authorId ?? null,

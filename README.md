@@ -76,6 +76,10 @@ More detail: [docs/architecture.md](docs/architecture.md).
 
 ---
 
+> **New to this?** [docs/INSTALLATIE.md](docs/INSTALLATIE.md) walks through
+> installation and everyday use step by step, in Dutch, assuming no prior
+> knowledge. The quick start below assumes you are comfortable with Docker.
+
 ## Quick start
 
 Only Docker is required on the host - no Node.js, Python, PostgreSQL or
@@ -122,6 +126,7 @@ curl -s http://127.0.0.1:3000/api/health | jq
 
 | Environment | Guide |
 | --- | --- |
+| Step by step, no prior knowledge (Dutch) | [docs/INSTALLATIE.md](docs/INSTALLATIE.md) |
 | Windows 11 + Hyper-V host | [docs/deployment/windows11-hyperv.md](docs/deployment/windows11-hyperv.md) |
 | Recommended VM settings | [docs/deployment/hyperv.md](docs/deployment/hyperv.md) |
 | Debian/Ubuntu VM or server | [docs/deployment/debian-vm.md](docs/deployment/debian-vm.md) |
@@ -464,6 +469,7 @@ POST /api/v1/analytics/recompute
 
 | Document | |
 | --- | --- |
+| [docs/INSTALLATIE.md](docs/INSTALLATIE.md) | Step-by-step installation and use, in Dutch |
 | [docs/architecture.md](docs/architecture.md) | Components, layers, scaling paths |
 | [docs/database/erd.md](docs/database/erd.md) | Schema, relations, indexes, views |
 | [docs/sql/README.md](docs/sql/README.md) | SQL access and an example library |

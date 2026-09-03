@@ -152,8 +152,57 @@ function renderPercentileBars(
     .join('');
 }
 
+/**
+ * Generic table, for the blocks that are genuinely tabular - a squad list, a
+ * two-team match comparison, a shortlist. Columns are an ordered array because
+ * the snapshot is jsonb and a report must re-render identically from it (§52).
+ */
+function renderTable(table: {
+  columns: { key: string; label: string; align?: 'left' | 'right' }[];
+  rows: Record<string, string | number | null>[];
+}): string {
+  if (table.rows.length === 0) return '<p class="muted">No rows.</p>';
+
+  const head = table.columns
+    .map(
+      (column) =>
+        `<th${column.align === 'right' ? ' class="right"' : ''}>${escapeHtml(column.label)}</th>`,
+    )
+    .join('');
+
+  const body = table.rows
+    .map(
+      (row) =>
+        `<tr>${table.columns
+          .map((column) => {
+            const value = row[column.key];
+            const text =
+              value === null || value === undefined
+                ? '-'
+                : typeof value === 'number'
+                  ? number(value)
+                  : value;
+            return `<td${column.align === 'right' ? ' class="right"' : ''}>${escapeHtml(text)}</td>`;
+          })
+          .join('')}</tr>`,
+    )
+    .join('');
+
+  return `<table class="grid"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
 function renderBlock(block: Block): string {
   const content = block.content as Record<string, unknown>;
+
+  // Any block may carry a table; this keeps new report types from falling
+  // through to the JSON dump in the default branch.
+  if (content.table) {
+    return section(
+      block.title,
+      renderTable(content.table as Parameters<typeof renderTable>[0]) +
+        (content.note ? `<p class="muted">${escapeHtml(content.note)}</p>` : ''),
+    );
+  }
 
   switch (block.type) {
     case 'TITLE':
@@ -349,6 +398,13 @@ const section = (title: string | undefined, body: string): string =>
   `<section class="block">${title ? `<h2>${escapeHtml(title)}</h2>` : ''}${body}</section>`;
 
 const STYLES = `
+  table.grid { width: 100%; border-collapse: collapse; font-size: 9pt; }
+  table.grid th { text-align: left; font-size: 7.5pt; text-transform: uppercase;
+                  letter-spacing: 0.04em; color: #64748b; border-bottom: 1px solid #cbd5e1;
+                  padding: 3px 5px; }
+  table.grid td { padding: 3px 5px; border-bottom: 1px solid #eef2f7; }
+  table.grid th.right, table.grid td.right { text-align: right; font-variant-numeric: tabular-nums; }
+
   @page { size: A4; margin: 18mm 14mm 20mm 14mm; }
   * { box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -412,7 +468,12 @@ export interface RenderInput {
   subtitle?: string | undefined;
   isDemo: boolean;
   blocks: Block[];
-  quality: { minutes: number; matches: number; confidence: string; summary: string };
+  /**
+   * Only the summary is rendered; the sample fields travel with it so a caller
+   * never has to invent numbers a report type does not have (a match report has
+   * no "minutes played").
+   */
+  quality: { summary: string; minutes?: number; matches?: number; confidence?: string };
 }
 
 export function renderReportHtml(input: RenderInput, options: RenderOptions): string {

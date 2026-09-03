@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, ConfidenceBadge, DemoBadge, Empty, Table, Td, Th } from '@/components/ui';
 import { ComparisonRadar, SERIES_COLOURS } from '@/components/radar';
 import { PlayerHeatmap } from '@/components/player-heatmap';
+import { GenerateReportButton } from '@/components/generate-report';
 
 /**
  * Player comparison (§43).
@@ -156,7 +157,13 @@ function PlayerPicker({
   );
 }
 
-export function PlayerCompare({ initialIds }: { initialIds: string[] }) {
+export function PlayerCompare({
+  initialIds,
+  canReport = false,
+}: {
+  initialIds: string[];
+  canReport?: boolean;
+}) {
   const [ids, setIds] = useState<string[]>(initialIds.slice(0, MAX_PLAYERS));
   const [data, setData] = useState<Comparison | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -269,6 +276,12 @@ export function PlayerCompare({ initialIds }: { initialIds: string[] }) {
 
       {data && players.length >= 2 && (
         <>
+          {canReport && (
+            <div className="flex justify-end">
+              <GenerateReportButton playerIds={ids} label="Comparison PDF report" />
+            </div>
+          )}
+
           {!data.sharedPopulation && (
             <p className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
               These players are ranked in different populations (competition season and position

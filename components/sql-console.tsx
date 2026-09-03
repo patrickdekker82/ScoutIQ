@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useRef, useState } from 'react';
 import { Card, Empty } from '@/components/ui';
 
 /**
@@ -65,11 +66,40 @@ ORDER BY events DESC;`,
   },
 ];
 
+const KEYWORDS =
+  /\b(SELECT|FROM|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|ON|AS|AND|OR|NOT|IN|IS|NULL|LIKE|ILIKE|BETWEEN|CASE|WHEN|THEN|ELSE|END|DISTINCT|UNION|ALL|WITH|ASC|DESC|COUNT|SUM|AVG|MIN|MAX|ROUND|COALESCE|OVER|PARTITION)\b/gi;
+
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+/**
+ * Minimal SQL highlighting (§23).
+ *
+ * Deliberately no editor library: the console must keep working under the
+ * strict CSP and without a CDN, and a regex over five token classes is enough
+ * to make a query readable. Everything is escaped before any markup is added.
+ */
+export function highlight(sql: string): string {
+  return escapeHtml(sql)
+    .replace(/(--[^\n]*)/g, '<span class="sql-comment">$1</span>')
+    .replace(/(&#39;|')((?:[^']|'')*)\1/g, '<span class="sql-string">$&</span>')
+    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="sql-number">$1</span>')
+    .replace(KEYWORDS, '<span class="sql-keyword">$&</span>');
+}
+
 export function SqlConsole({ history, saved }: { history: HistoryEntry[]; saved: SavedQuery[] }) {
+  const router = useRouter();
   const [sql, setSql] = useState(EXAMPLES[0]?.sql ?? '');
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [saveDescription, setSaveDescription] = useState('');
+  const mirror = useRef<HTMLPreElement>(null);
 
   async function run() {
     setBusy(true);
@@ -119,13 +149,46 @@ export function SqlConsole({ history, saved }: { history: HistoryEntry[]; saved:
     URL.revokeObjectURL(url);
   }
 
+  async function save() {
+    setBusy(true);
+    setError(null);
+    const response = await fetch('/api/v1/sql', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sql,
+        save: {
+          name: saveName,
+          ...(saveDescription ? { description: saveDescription } : {}),
+        },
+      }),
+    });
+    setBusy(false);
+    if (!response.ok) {
+      setError('Could not save that query.');
+      return;
+    }
+    setSaving(false);
+    setSaveName('');
+    setSaveDescription('');
+    router.refresh();
+  }
+
   return (
     <div className="space-y-5">
       <Card
         title="SQL console"
         subtitle="Read-only. PostgreSQL is a first-class product here - query it directly."
         actions={
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSaving((value) => !value)}
+              disabled={busy || sql.trim().length === 0}
+              className="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-ink-100 disabled:opacity-60"
+            >
+              {saving ? 'Cancel' : 'Save query'}
+            </button>
             <button
               type="button"
               onClick={() => void run()}
@@ -137,13 +200,65 @@ export function SqlConsole({ history, saved }: { history: HistoryEntry[]; saved:
           </div>
         }
       >
-        <textarea
-          value={sql}
-          onChange={(event) => setSql(event.target.value)}
-          spellCheck={false}
-          rows={10}
-          className="w-full rounded-md border border-ink-300 bg-ink-900 p-3 font-mono text-[13px] leading-relaxed text-ink-100 outline-none focus:border-brand-500"
-        />
+        {saving && (
+          <form
+            className="mb-3 flex flex-wrap items-end gap-2"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              await save();
+            }}
+          >
+            <label className="text-xs font-medium uppercase tracking-wide text-ink-500">
+              Name
+              <input
+                required
+                value={saveName}
+                onChange={(event) => setSaveName(event.target.value)}
+                placeholder="Progressive passers, U23"
+                className="mt-1 block w-64 rounded-md border border-ink-300 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
+              />
+            </label>
+            <label className="text-xs font-medium uppercase tracking-wide text-ink-500">
+              Description
+              <input
+                value={saveDescription}
+                onChange={(event) => setSaveDescription(event.target.value)}
+                className="mt-1 block w-80 rounded-md border border-ink-300 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={busy || saveName.trim().length === 0}
+              className="rounded-md bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+            >
+              Save
+            </button>
+          </form>
+        )}
+
+        {/*
+          Syntax highlighting without a library: a coloured <pre> sits behind a
+          transparent <textarea> with identical metrics, so the caret, selection
+          and scrolling all remain the browser's own.
+        */}
+        <div className="relative overflow-hidden rounded-md border border-ink-300 bg-ink-900 focus-within:border-brand-500">
+          <pre
+            aria-hidden
+            ref={mirror}
+            className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre-wrap break-words p-3 font-mono text-[13px] leading-relaxed text-ink-100"
+            dangerouslySetInnerHTML={{ __html: highlight(sql) + '\n' }}
+          />
+          <textarea
+            value={sql}
+            onChange={(event) => setSql(event.target.value)}
+            onScroll={(event) => {
+              if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop;
+            }}
+            spellCheck={false}
+            rows={10}
+            className="relative block w-full resize-y whitespace-pre-wrap break-words bg-transparent p-3 font-mono text-[13px] leading-relaxed text-transparent caret-ink-100 outline-none"
+          />
+        </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
           {EXAMPLES.map((example) => (

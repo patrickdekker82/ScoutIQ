@@ -25,6 +25,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     { href: '/matches', label: 'Matches', show: true },
     { href: '/shortlists', label: 'Shortlists', show: can(user.role, 'shortlists:write') },
     { href: '/reports', label: 'Reports', show: true },
+    { href: '/roles', label: 'Roles', show: can(user.role, 'analytics:run') },
     { href: '/data', label: 'Data', show: true },
     { href: '/data/sql', label: 'SQL', show: can(user.role, 'sql:read') },
     { href: '/data/jobs', label: 'Jobs', show: can(user.role, 'data:read') },
@@ -34,12 +35,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-20 border-b border-ink-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-[1400px] items-center gap-6 px-5 py-2.5">
+        <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-x-6 gap-y-2 px-5 py-2.5">
           <Link href="/" className="text-base font-bold tracking-tight text-ink-900">
             Scout<span className="text-brand-600">IQ</span>
           </Link>
 
-          <nav className="flex items-center gap-1 overflow-x-auto">
+          <nav className="order-3 flex w-full items-center gap-1 overflow-x-auto lg:order-none lg:w-auto">
             {nav.map((entry) => (
               <Link
                 key={entry.href}

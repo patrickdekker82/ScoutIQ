@@ -47,6 +47,8 @@ export interface ExportJobData {
 
 export interface ReportJobData {
   playerId?: string;
+  /** Two to five players, for a comparison report (§43, §51). */
+  playerIds?: string[];
   teamId?: string;
   matchId?: string;
   competitionSeasonId?: string;

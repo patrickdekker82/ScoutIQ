@@ -5,12 +5,15 @@ import { STYLE_DIMENSIONS, STYLE_LABELS } from '@/analytics/team-style';
 import { prisma } from '@/db/client';
 import { Card, ConfidenceBadge, DemoBadge, Empty, PercentileBar, Stat, Table, Td, Th } from '@/components/ui';
 import { DnaRadar } from '@/components/radar';
+import { GenerateReportButton } from '@/components/generate-report';
+import { can, getSessionUser } from '@/server/auth';
 
 export const dynamic = 'force-dynamic';
 
 /** Club page (§41). */
 export default async function TeamPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const user = await getSessionUser();
 
   const team = await prisma.team.findUnique({
     where: { id },
@@ -60,12 +63,17 @@ export default async function TeamPage({ params }: { params: Promise<{ id: strin
         {seasonMetric && (
           <ConfidenceBadge confidence={seasonMetric.confidence} matches={seasonMetric.matches} />
         )}
-        <Link
-          href={`/teams/compare?ids=${team.id}`}
-          className="ml-auto rounded-md border border-ink-300 px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-ink-100"
-        >
-          Compare
-        </Link>
+        <div className="ml-auto flex items-center gap-2">
+          <Link
+            href={`/teams/compare?ids=${team.id}`}
+            className="rounded-md border border-ink-300 px-3 py-2 text-sm font-medium text-ink-700 hover:bg-ink-100"
+          >
+            Compare
+          </Link>
+          {user && can(user.role, 'reports:create') && (
+            <GenerateReportButton teamId={team.id} label="Club report" />
+          )}
+        </div>
       </header>
 
       {seasonMetric && (

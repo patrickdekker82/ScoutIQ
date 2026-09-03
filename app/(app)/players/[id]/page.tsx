@@ -9,6 +9,7 @@ import { ShotMap } from '@/components/pitch';
 import { humanise } from '@/reports/blocks';
 import { GenerateReportButton } from '@/components/generate-report';
 import { ScoutRatings } from '@/components/scout-ratings';
+import { AddToShortlist } from '@/components/add-to-shortlist';
 import { can, getSessionUser } from '@/server/auth';
 
 export const dynamic = 'force-dynamic';
@@ -41,7 +42,8 @@ export default async function PlayerPage({ params }: { params: Promise<{ id: str
     orderBy: { minutes: 'desc' },
   });
 
-  const [percentiles, style, roles, similar, fits, notes, shots, ratings] = await Promise.all([
+  const [percentiles, style, roles, similar, fits, notes, shots, shortlists, ratings] =
+    await Promise.all([
     seasonMetric
       ? prisma.$queryRaw<{ metric_key: string; value: number; percentile: number; population_size: number }[]>`
           SELECT metric_key, value, percentile, population_size
@@ -89,6 +91,14 @@ export default async function PlayerPage({ params }: { params: Promise<{ id: str
       where: { playerId: id, type: 'SHOT', x: { not: null }, y: { not: null } },
       select: { id: true, x: true, y: true, minute: true, shot: true },
       take: 400,
+    }),
+    prisma.shortlist.findMany({
+      select: {
+        id: true,
+        name: true,
+        players: { where: { playerId: id }, select: { id: true } },
+      },
+      orderBy: { name: 'asc' },
     }),
     prisma.scoutRating.findMany({
       where: { playerId: id },
@@ -155,6 +165,16 @@ export default async function PlayerPage({ params }: { params: Promise<{ id: str
         </div>
 
         <div className="flex items-center gap-2">
+          {user && can(user.role, 'shortlists:write') && (
+            <AddToShortlist
+              playerId={player.id}
+              shortlists={shortlists.map((shortlist) => ({
+                id: shortlist.id,
+                name: shortlist.name,
+                contains: shortlist.players.length > 0,
+              }))}
+            />
+          )}
           <Link
             href={`/players/compare?ids=${player.id}`}
             className="rounded-md border border-ink-300 px-3 py-2 text-sm font-medium text-ink-700 hover:bg-ink-100"

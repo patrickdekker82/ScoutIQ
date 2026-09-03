@@ -55,6 +55,16 @@ export const DATASETS: Record<string, string> = {
   roles: 'SELECT * FROM vw_player_roles',
   similarity: 'SELECT * FROM vw_player_similarity',
   club_fit: 'SELECT * FROM vw_player_club_fit',
+  tracking_aggregates:
+    'SELECT ta.id, ta."trackingSessionId" AS tracking_session_id, ' +
+    'p."fullName" AS player, t.name AS team, ta.phase, ' +
+    'ta."avgX" AS avg_x, ta."avgY" AS avg_y, ta."distanceM" AS distance_m, ' +
+    'ta."highSpeedDistanceM" AS high_speed_distance_m, ta."sprintCount" AS sprint_count, ' +
+    'ta."maxSpeedMs" AS max_speed_ms, ta."teamWidthM" AS team_width_m, ' +
+    'ta."teamDepthM" AS team_depth_m, ta.compactness, ta."analyticsVersion" AS analytics_version ' +
+    'FROM tracking_aggregates ta ' +
+    'LEFT JOIN players p ON p.id = ta."playerId" ' +
+    'LEFT JOIN teams t ON t.id = ta."teamId"',
   shortlists:
     'SELECT s.name AS shortlist, p."fullName" AS player, sp.status, sp.priority, ' +
     'sp."scoutRating" AS scout_rating, sp.notes ' +

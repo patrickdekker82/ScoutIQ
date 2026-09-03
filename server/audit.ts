@@ -30,6 +30,8 @@ export type AuditAction =
   | 'import.file.delete'
   | 'entity.merge'
   | 'analytics.refresh'
+  | 'role.create'
+  | 'role.delete'
   | 'report.generate'
   | 'report.delete'
   | 'export.create'

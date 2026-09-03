@@ -24,7 +24,7 @@ export interface HeatmapQuery {
   half?: 1 | 2;
   minuteFrom?: number;
   minuteTo?: number;
-  possession?: 'IN' | 'OUT';
+  possession?: 'IN' | 'OUT' | 'ALL';
   persist?: boolean;
 }
 
@@ -72,8 +72,34 @@ const SOURCES: Record<HeatmapType, { types: EventType[]; useEnd?: boolean }> = {
 export class HeatmapService {
   constructor(private readonly prisma: PrismaClient = defaultPrisma) {}
 
+  /** The team a player's events belong to, within the filtered scope. */
+  private async teamOfPlayer(query: HeatmapQuery): Promise<string | null> {
+    if (!query.playerId) return null;
+
+    const event = await this.prisma.event.findFirst({
+      where: {
+        playerId: query.playerId,
+        teamId: { not: null },
+        ...(query.matchId ? { matchId: query.matchId } : {}),
+        ...(query.competitionSeasonId
+          ? { match: { competitionSeasonId: query.competitionSeasonId } }
+          : {}),
+      },
+      select: { teamId: true },
+    });
+
+    return event?.teamId ?? null;
+  }
+
   async build(query: HeatmapQuery): Promise<HeatmapResult & { filters: object }> {
     const source = SOURCES[query.type];
+
+    // A possession filter needs a team. For a player heatmap that is the team
+    // they were playing for, which has to be looked up.
+    const possessionTeamId =
+      query.possession && query.possession !== 'ALL'
+        ? (query.teamId ?? (await this.teamOfPlayer(query)))
+        : null;
 
     const events = await this.prisma.event.findMany({
       where: {
@@ -93,11 +119,16 @@ export class HeatmapService {
             }
           : {}),
         ...(query.half ? { period: { period: query.half } } : {}),
-        ...(query.possession === 'IN'
-          ? { possessionTeamId: { not: null } }
-          : query.possession === 'OUT'
-            ? { possessionTeamId: null }
-            : {}),
+        // In possession means this team had the ball, not merely that the
+        // field is populated. Without a team to compare against the filter
+        // cannot mean anything, so it is ignored rather than guessed at.
+        ...(possessionTeamId
+          ? query.possession === 'IN'
+            ? { possessionTeamId }
+            : query.possession === 'OUT'
+              ? { possessionTeamId: { not: possessionTeamId } }
+              : {}
+          : {}),
         x: { not: null },
         y: { not: null },
       },
