@@ -1,10 +1,10 @@
 import { CompareTabs } from '@/components/compare-tabs';
-import { PlayerCompare } from '@/components/player-compare';
+import { ClubCompare } from '@/components/club-compare';
 
 export const dynamic = 'force-dynamic';
 
-/** Player comparison (§43). Players are chosen client-side and shared by URL. */
-export default async function ComparePlayersPage({
+/** Club comparison (§44). Clubs are chosen client-side and shared by URL. */
+export default async function CompareClubsPage({
   searchParams,
 }: {
   searchParams: Promise<{ ids?: string }>;
@@ -18,7 +18,7 @@ export default async function ComparePlayersPage({
   return (
     <div className="space-y-4">
       <CompareTabs />
-      <PlayerCompare initialIds={initialIds} />
+      <ClubCompare initialIds={initialIds} />
     </div>
   );
 }

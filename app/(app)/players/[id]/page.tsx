@@ -8,12 +8,16 @@ import { PlayerHeatmap } from '@/components/player-heatmap';
 import { ShotMap } from '@/components/pitch';
 import { humanise } from '@/reports/blocks';
 import { GenerateReportButton } from '@/components/generate-report';
+import { ScoutRatings } from '@/components/scout-ratings';
+import { can, getSessionUser } from '@/server/auth';
 
 export const dynamic = 'force-dynamic';
 
 /** Player page (§42). */
 export default async function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+
+  const user = await getSessionUser();
 
   const player = await prisma.player.findUnique({
     where: { id },
@@ -37,7 +41,7 @@ export default async function PlayerPage({ params }: { params: Promise<{ id: str
     orderBy: { minutes: 'desc' },
   });
 
-  const [percentiles, style, roles, similar, fits, notes, shots] = await Promise.all([
+  const [percentiles, style, roles, similar, fits, notes, shots, ratings] = await Promise.all([
     seasonMetric
       ? prisma.$queryRaw<{ metric_key: string; value: number; percentile: number; population_size: number }[]>`
           SELECT metric_key, value, percentile, population_size
@@ -85,6 +89,21 @@ export default async function PlayerPage({ params }: { params: Promise<{ id: str
       where: { playerId: id, type: 'SHOT', x: { not: null }, y: { not: null } },
       select: { id: true, x: true, y: true, minute: true, shot: true },
       take: 400,
+    }),
+    prisma.scoutRating.findMany({
+      where: { playerId: id },
+      include: {
+        author: { select: { id: true, displayName: true } },
+        match: {
+          select: {
+            kickoffAt: true,
+            homeTeam: { select: { name: true } },
+            awayTeam: { select: { name: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 25,
     }),
   ]);
 
@@ -355,6 +374,31 @@ export default async function PlayerPage({ params }: { params: Promise<{ id: str
           </Card>
         </>
       )}
+
+      <Card title="Scout ratings" subtitle="Human judgement, never folded into the analytics (§49)">
+        <ScoutRatings
+          playerId={player.id}
+          selfId={user?.id ?? null}
+          isAdmin={user?.role === 'ADMIN'}
+          canRate={Boolean(user && can(user.role, 'notes:write'))}
+          ratings={ratings.map((rating) => ({
+            id: rating.id,
+            authorId: rating.author.id,
+            authorName: rating.author.displayName,
+            createdAt: rating.createdAt.toISOString(),
+            matchLabel: rating.match
+              ? `${rating.match.homeTeam.name} v ${rating.match.awayTeam.name}`
+              : null,
+            notes: rating.notes,
+            technical: rating.technical,
+            tactical: rating.tactical,
+            physical: rating.physical,
+            mental: rating.mental,
+            potential: rating.potential,
+            overall: rating.overall,
+          }))}
+        />
+      </Card>
     </div>
   );
 }

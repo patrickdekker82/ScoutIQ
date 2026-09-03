@@ -20,8 +20,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const nav = [
     { href: '/', label: 'Overview', show: true },
     { href: '/players', label: 'Players', show: true },
-    { href: '/players/compare', label: 'Compare', show: true },
     { href: '/teams', label: 'Clubs', show: true },
+    { href: '/players/compare', label: 'Compare', show: true },
     { href: '/matches', label: 'Matches', show: true },
     { href: '/shortlists', label: 'Shortlists', show: can(user.role, 'shortlists:write') },
     { href: '/reports', label: 'Reports', show: true },

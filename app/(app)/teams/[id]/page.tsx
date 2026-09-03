@@ -1,29 +1,12 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ANALYTICS_VERSION } from '@/analytics/version';
-import { STYLE_DIMENSIONS } from '@/analytics/team-style';
+import { STYLE_DIMENSIONS, STYLE_LABELS } from '@/analytics/team-style';
 import { prisma } from '@/db/client';
 import { Card, ConfidenceBadge, DemoBadge, Empty, PercentileBar, Stat, Table, Td, Th } from '@/components/ui';
 import { DnaRadar } from '@/components/radar';
 
 export const dynamic = 'force-dynamic';
-
-const LABELS: Record<string, string> = {
-  possession: 'Possession',
-  buildUp: 'Build-up',
-  directness: 'Directness',
-  progression: 'Progression',
-  width: 'Width',
-  centralAttack: 'Central attack',
-  crossing: 'Crossing',
-  chanceCreation: 'Chance creation',
-  highPress: 'High press',
-  counterpress: 'Counterpress',
-  lowBlock: 'Low block',
-  transition: 'Transition',
-  defensiveAggression: 'Defensive aggression',
-  defensiveCompactness: 'Defensive compactness',
-};
 
 /** Club page (§41). */
 export default async function TeamPage({ params }: { params: Promise<{ id: string }> }) {
@@ -77,6 +60,12 @@ export default async function TeamPage({ params }: { params: Promise<{ id: strin
         {seasonMetric && (
           <ConfidenceBadge confidence={seasonMetric.confidence} matches={seasonMetric.matches} />
         )}
+        <Link
+          href={`/teams/compare?ids=${team.id}`}
+          className="ml-auto rounded-md border border-ink-300 px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-ink-100"
+        >
+          Compare
+        </Link>
       </header>
 
       {seasonMetric && (
@@ -105,7 +94,7 @@ export default async function TeamPage({ params }: { params: Promise<{ id: strin
             <DnaRadar
               axes={STYLE_DIMENSIONS.filter((dimension) => dimensions[dimension] !== undefined).map(
                 (dimension) => ({
-                  category: LABELS[dimension] ?? dimension,
+                  category: STYLE_LABELS[dimension] ?? dimension,
                   score: dimensions[dimension] as number,
                 }),
               )}
@@ -127,7 +116,7 @@ export default async function TeamPage({ params }: { params: Promise<{ id: strin
               <tbody>
                 {STYLE_DIMENSIONS.map((dimension) => (
                   <tr key={dimension}>
-                    <Td>{LABELS[dimension] ?? dimension}</Td>
+                    <Td>{STYLE_LABELS[dimension] ?? dimension}</Td>
                     <Td>
                       <PercentileBar percentile={dimensions[dimension] ?? 0} />
                     </Td>

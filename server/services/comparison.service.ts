@@ -72,6 +72,77 @@ type PercentileRow = {
   population_size: number;
 };
 
+
+// ---------------------------------------------------------------------------
+// Club comparison (§44)
+// ---------------------------------------------------------------------------
+
+/**
+ * Season metrics shown side by side, with how to read each one.
+ *
+ * `higherIsBetter` is deliberately explicit and sometimes null: more possession
+ * is not better football, and a lower PPDA means a more aggressive press. The
+ * UI leans on this rather than assuming bigger is greener (§85).
+ */
+export const CLUB_METRICS = [
+  { key: 'possession', label: 'Possession', unit: 'percent', higherIsBetter: null },
+  { key: 'xgP90', label: 'xG per 90', unit: 'rate', higherIsBetter: true },
+  { key: 'xgAgainstP90', label: 'xG against per 90', unit: 'rate', higherIsBetter: false },
+  { key: 'shotsP90', label: 'Shots per 90', unit: 'rate', higherIsBetter: true },
+  { key: 'progressionP90', label: 'Progression per 90', unit: 'rate', higherIsBetter: true },
+  { key: 'finalThirdEntriesP90', label: 'Final third entries per 90', unit: 'rate', higherIsBetter: true },
+  { key: 'boxEntriesP90', label: 'Box entries per 90', unit: 'rate', higherIsBetter: true },
+  { key: 'directness', label: 'Directness', unit: 'rate', higherIsBetter: null },
+  { key: 'fieldTilt', label: 'Field tilt', unit: 'percent', higherIsBetter: true },
+  { key: 'passesP90', label: 'Passes per 90', unit: 'rate', higherIsBetter: null },
+  { key: 'passAccuracy', label: 'Pass accuracy', unit: 'percent', higherIsBetter: true },
+  { key: 'pressuresP90', label: 'Pressures per 90', unit: 'rate', higherIsBetter: null },
+  { key: 'recoveriesP90', label: 'Recoveries per 90', unit: 'rate', higherIsBetter: true },
+  { key: 'ppda', label: 'PPDA', unit: 'rate', higherIsBetter: false },
+] as const;
+
+export type ClubMetricKey = (typeof CLUB_METRICS)[number]['key'];
+
+/** Per-match series shown as trend lines (§44). */
+export const CLUB_TREND_METRICS = [
+  { key: 'xg', label: 'xG' },
+  { key: 'possession', label: 'Possession' },
+  { key: 'crosses', label: 'Crosses' },
+  { key: 'directness', label: 'Directness' },
+] as const;
+
+export interface ComparedClub {
+  id: string;
+  name: string;
+  isDemo: boolean;
+  season: {
+    competitionSeasonId: string;
+    competitionName: string;
+    seasonName: string;
+    matches: number;
+    confidence: string;
+  } | null;
+  metrics: Record<string, number | null>;
+  /** Rank of each metric among the clubs in the same competition season. */
+  percentiles: Record<string, number>;
+  style: Record<string, number>;
+  /** Defensive actions per match, summed from the per-match metrics. */
+  defensiveActionsPerMatch: number | null;
+  crossesPerMatch: number | null;
+  trend: { matchId: string; label: string; kickoffAt: string; values: Record<string, number> }[];
+}
+
+export interface ClubComparison {
+  analyticsVersion: string;
+  clubs: ComparedClub[];
+  sharedPopulation: boolean;
+  styleDimensions: string[];
+  metrics: typeof CLUB_METRICS;
+  trendMetrics: typeof CLUB_TREND_METRICS;
+  /** How many clubs each percentile was computed against, by season. */
+  populationSizes: Record<string, number>;
+}
+
 export class ComparisonService {
   constructor(private readonly prisma: PrismaClient = defaultPrisma) {}
 
@@ -234,6 +305,174 @@ export class ComparisonService {
         .filter((entry) => entry.percentile <= 30)
         .slice(-5)
         .reverse(),
+    };
+  }
+
+
+  /** Compare 2-5 clubs (§44). */
+  async compareTeams(ids: readonly string[]): Promise<ClubComparison> {
+    const unique = [...new Set(ids)];
+    if (unique.length < 2) throw new Error('Comparison needs at least two clubs.');
+    if (unique.length > 5) throw new Error('Comparison is limited to five clubs.');
+
+    const teams = await this.prisma.team.findMany({ where: { id: { in: unique } } });
+    const byId = new Map(teams.map((team) => [team.id, team]));
+    const ordered = unique.map((id) => byId.get(id)).filter((team) => team !== undefined);
+
+    const seasonMetrics = await this.prisma.teamSeasonMetric.findMany({
+      where: { teamId: { in: ordered.map((team) => team.id) }, analyticsVersion: ANALYTICS_VERSION },
+      include: { season: { include: { competition: { select: { name: true } } } } },
+      orderBy: { matches: 'desc' },
+    });
+
+    // One season per club: the one it played most of.
+    const seasonByTeam = new Map<string, (typeof seasonMetrics)[number]>();
+    for (const metric of seasonMetrics) {
+      if (!seasonByTeam.has(metric.teamId)) seasonByTeam.set(metric.teamId, metric);
+    }
+
+    // Percentiles need the whole competition season, not just the clubs being
+    // compared: "top of these three" is not a rank (§26).
+    const seasonIds = [...new Set([...seasonByTeam.values()].map((m) => m.competitionSeasonId))];
+    const populations = await this.prisma.teamSeasonMetric.findMany({
+      where: { competitionSeasonId: { in: seasonIds }, analyticsVersion: ANALYTICS_VERSION },
+    });
+
+    const populationSizes: Record<string, number> = {};
+    for (const seasonId of seasonIds) {
+      populationSizes[seasonId] = populations.filter(
+        (row) => row.competitionSeasonId === seasonId,
+      ).length;
+    }
+
+    const clubs = await Promise.all(
+      ordered.map((team) =>
+        this.buildClub(team, seasonByTeam.get(team.id) ?? null, populations),
+      ),
+    );
+
+    const styleDimensions: string[] = [];
+    for (const club of clubs) {
+      for (const dimension of Object.keys(club.style)) {
+        if (!styleDimensions.includes(dimension)) styleDimensions.push(dimension);
+      }
+    }
+
+    return {
+      analyticsVersion: ANALYTICS_VERSION,
+      clubs,
+      sharedPopulation: seasonIds.length === 1 && clubs.every((club) => club.season !== null),
+      styleDimensions,
+      metrics: CLUB_METRICS,
+      trendMetrics: CLUB_TREND_METRICS,
+      populationSizes,
+    };
+  }
+
+  private async buildClub(
+    team: { id: string; name: string; isDemo: boolean },
+    seasonMetric:
+      | {
+          competitionSeasonId: string;
+          matches: number;
+          confidence: string;
+          season: { seasonName: string; competition: { name: string } };
+        }
+      | null,
+    populations: Record<string, unknown>[],
+  ): Promise<ComparedClub> {
+    const [style, matchMetrics] = await Promise.all([
+      seasonMetric
+        ? this.prisma.teamStyleProfile.findFirst({
+            where: {
+              teamId: team.id,
+              competitionSeasonId: seasonMetric.competitionSeasonId,
+              analyticsVersion: ANALYTICS_VERSION,
+            },
+          })
+        : Promise.resolve(null),
+      this.prisma.teamMatchMetric.findMany({
+        where: { teamId: team.id, analyticsVersion: ANALYTICS_VERSION },
+        include: {
+          match: {
+            select: {
+              kickoffAt: true,
+              homeTeam: { select: { id: true, name: true } },
+              awayTeam: { select: { id: true, name: true } },
+            },
+          },
+        },
+        orderBy: { match: { kickoffAt: 'asc' } },
+      }),
+    ]);
+
+    const row = seasonMetric as unknown as Record<string, unknown> | null;
+    const metrics: Record<string, number | null> = {};
+    for (const metric of CLUB_METRICS) {
+      const value = row?.[metric.key];
+      metrics[metric.key] = typeof value === 'number' ? value : null;
+    }
+
+    const percentiles: Record<string, number> = {};
+    if (seasonMetric) {
+      const pool = populations.filter(
+        (candidate) => candidate.competitionSeasonId === seasonMetric.competitionSeasonId,
+      );
+
+      for (const metric of CLUB_METRICS) {
+        const own = metrics[metric.key];
+        if (own === null || own === undefined) continue;
+
+        const values = pool
+          .map((candidate) => candidate[metric.key])
+          .filter((value): value is number => typeof value === 'number');
+        if (values.length < 2) continue;
+
+        const below = values.filter((value) => value < own).length;
+        percentiles[metric.key] = Math.round((below / (values.length - 1)) * 1000) / 10;
+      }
+    }
+
+    const average = (read: (row: (typeof matchMetrics)[number]) => number): number | null =>
+      matchMetrics.length === 0
+        ? null
+        : Math.round((matchMetrics.reduce((sum, entry) => sum + read(entry), 0) / matchMetrics.length) * 100) /
+          100;
+
+    return {
+      id: team.id,
+      name: team.name,
+      isDemo: team.isDemo,
+      season: seasonMetric
+        ? {
+            competitionSeasonId: seasonMetric.competitionSeasonId,
+            competitionName: seasonMetric.season.competition.name,
+            seasonName: seasonMetric.season.seasonName,
+            matches: seasonMetric.matches,
+            confidence: seasonMetric.confidence,
+          }
+        : null,
+      metrics,
+      percentiles,
+      style: (style?.style as Record<string, number> | undefined) ?? {},
+      defensiveActionsPerMatch: average(
+        (entry) => entry.tackles + entry.interceptions + entry.recoveries,
+      ),
+      crossesPerMatch: average((entry) => entry.crosses),
+      trend: matchMetrics.map((entry) => ({
+        matchId: entry.matchId,
+        label:
+          entry.match.homeTeam.id === team.id
+            ? `vs ${entry.match.awayTeam.name}`
+            : `at ${entry.match.homeTeam.name}`,
+        kickoffAt: entry.match.kickoffAt.toISOString(),
+        values: {
+          xg: entry.xg,
+          possession: entry.possession,
+          crosses: entry.crosses,
+          directness: entry.directness,
+        },
+      })),
     };
   }
 

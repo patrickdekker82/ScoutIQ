@@ -28,6 +28,24 @@ export const STYLE_DIMENSIONS = [
 
 export type StyleDimension = (typeof STYLE_DIMENSIONS)[number];
 
+/** Display names for the dimensions, shared by every screen that shows them. */
+export const STYLE_LABELS: Record<StyleDimension, string> = {
+  possession: 'Possession',
+  buildUp: 'Build-up',
+  directness: 'Directness',
+  progression: 'Progression',
+  width: 'Width',
+  centralAttack: 'Central attack',
+  crossing: 'Crossing',
+  chanceCreation: 'Chance creation',
+  highPress: 'High press',
+  counterpress: 'Counterpress',
+  lowBlock: 'Low block',
+  transition: 'Transition',
+  defensiveAggression: 'Defensive aggression',
+  defensiveCompactness: 'Defensive compactness',
+};
+
 export interface StyleInput {
   value: number | null;
   population: number[];

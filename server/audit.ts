@@ -26,6 +26,8 @@ export type AuditAction =
   | 'import.start'
   | 'import.complete'
   | 'import.fail'
+  | 'import.file.upload'
+  | 'import.file.delete'
   | 'entity.merge'
   | 'analytics.refresh'
   | 'report.generate'
@@ -34,6 +36,8 @@ export type AuditAction =
   | 'sql.execute'
   | 'shortlist.update'
   | 'note.create'
+  | 'rating.create'
+  | 'rating.delete'
   | 'backup.run'
   | 'data.delete';
 

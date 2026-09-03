@@ -1,6 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { describe, expect, it } from 'vitest';
-import { ComparisonService } from '@/server/services/comparison.service';
+import { CLUB_METRICS, ComparisonService } from '@/server/services/comparison.service';
 
 /**
  * Player comparison (§43).
@@ -225,5 +225,110 @@ describe('comparePlayers', () => {
 
     const result = await service.comparePlayers([ID.a, ID.a, ID.b]);
     expect(result.players).toHaveLength(2);
+  });
+});
+
+/**
+ * Club comparison (§44).
+ *
+ * The percentile population is the whole competition season, not the clubs
+ * being compared: "best of these three" is not a rank.
+ */
+const clubStub = (
+  clubs: { id: string; name: string; seasonId: string; possession: number; xgP90: number }[],
+  pool: { competitionSeasonId: string; possession: number; xgP90: number }[],
+) => {
+  const byId = new Map(clubs.map((club) => [club.id, club]));
+
+  return {
+    team: {
+      findMany: async ({ where }: { where: { id: { in: string[] } } }) =>
+        where.id.in
+          .map((id) => byId.get(id))
+          .filter((club) => club !== undefined)
+          .map((club) => ({ id: club.id, name: club.name, isDemo: false })),
+    },
+    teamSeasonMetric: {
+      findMany: async ({ where }: { where: Record<string, unknown> }) => {
+        // The second call asks for the whole population by season.
+        if ('competitionSeasonId' in where) return pool;
+        return clubs.map((club) => ({
+          teamId: club.id,
+          competitionSeasonId: club.seasonId,
+          matches: 30,
+          confidence: 'HIGH',
+          possession: club.possession,
+          xgP90: club.xgP90,
+          season: { seasonName: '2025/26', competition: { name: 'Eredivisie' } },
+        }));
+      },
+    },
+    teamStyleProfile: { findFirst: async () => ({ style: { possession: 70, highPress: 40 } }) },
+    teamMatchMetric: { findMany: async () => [] },
+  } as unknown as PrismaClient;
+};
+
+const CLUB = {
+  a: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+  b: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+};
+
+describe('compareTeams', () => {
+  it('refuses fewer than two and more than five clubs (§44)', async () => {
+    const service = new ComparisonService(clubStub([], []));
+    await expect(service.compareTeams([CLUB.a])).rejects.toThrow('at least two');
+    await expect(service.compareTeams(['1', '2', '3', '4', '5', '6'])).rejects.toThrow('five clubs');
+  });
+
+  it('ranks a club against its whole competition, not against the other picks', async () => {
+    const clubs = [
+      { id: CLUB.a, name: 'Ajax', seasonId: 's1', possession: 60, xgP90: 2.1 },
+      { id: CLUB.b, name: 'PSV', seasonId: 's1', possession: 55, xgP90: 1.8 },
+    ];
+    // Five clubs in the league: 40, 45, 55, 60, 65 possession.
+    const pool = [40, 45, 55, 60, 65].map((possession) => ({
+      competitionSeasonId: 's1',
+      possession,
+      xgP90: 1.5,
+    }));
+
+    const result = await new ComparisonService(clubStub(clubs, pool)).compareTeams([
+      CLUB.a,
+      CLUB.b,
+    ]);
+
+    expect(result.populationSizes.s1).toBe(5);
+    // Ajax on 60 has three of five below it: 75th percentile of the league.
+    expect(result.clubs[0]?.percentiles.possession).toBe(75);
+    // PSV on 55 has two below it, which is 50 - not "second of two".
+    expect(result.clubs[1]?.percentiles.possession).toBe(50);
+  });
+
+  it('flags different populations when the clubs are in different seasons', async () => {
+    const clubs = [
+      { id: CLUB.a, name: 'Ajax', seasonId: 's1', possession: 60, xgP90: 2.1 },
+      { id: CLUB.b, name: 'Anderlecht', seasonId: 's2', possession: 55, xgP90: 1.8 },
+    ];
+    const pool = [
+      { competitionSeasonId: 's1', possession: 40, xgP90: 1 },
+      { competitionSeasonId: 's2', possession: 50, xgP90: 1 },
+    ];
+
+    const result = await new ComparisonService(clubStub(clubs, pool)).compareTeams([
+      CLUB.a,
+      CLUB.b,
+    ]);
+    expect(result.sharedPopulation).toBe(false);
+  });
+
+  it('marks a direction only where one exists', () => {
+    const possession = CLUB_METRICS.find((metric) => metric.key === 'possession');
+    const conceded = CLUB_METRICS.find((metric) => metric.key === 'xgAgainstP90');
+    const created = CLUB_METRICS.find((metric) => metric.key === 'xgP90');
+
+    // More of the ball is a style, not an improvement.
+    expect(possession?.higherIsBetter).toBeNull();
+    expect(conceded?.higherIsBetter).toBe(false);
+    expect(created?.higherIsBetter).toBe(true);
   });
 });

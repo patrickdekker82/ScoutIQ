@@ -5,6 +5,7 @@ import { Card, Empty, Table, Td, Th } from '@/components/ui';
 import { ImportPanel } from '@/components/import-panel';
 import { ExportPanel } from '@/components/export-panel';
 import { SyncSchedules, type SyncScheduleRow } from '@/components/sync-schedules';
+import { FileImport } from '@/components/file-import';
 
 export const dynamic = 'force-dynamic';
 
@@ -74,6 +75,8 @@ export default async function DataPage() {
   return (
     <div className="space-y-5">
       {user && can(user.role, 'imports:run') && <ImportPanel providers={providers} />}
+
+      {user && can(user.role, 'imports:run') && <FileImport />}
 
       {user && can(user.role, 'providers:manage') && (
         <SyncSchedules schedules={syncRows} providers={syncableProviders} />
